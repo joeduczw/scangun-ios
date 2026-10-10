@@ -1,0 +1,9 @@
+# Xcode/构建产物
+build/
+*.xcarchive
+*.ipa
+ExportOptions.plist
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.DS_Store

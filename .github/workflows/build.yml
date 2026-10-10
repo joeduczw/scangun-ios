@@ -1,0 +1,143 @@
+name: Build iOS
+
+# 触发：手动 / 打 tag（v*）/ 每月1日自动重建
+# 双模式：
+#   1) build-unsigned —— 永远执行：产出未签名 IPA（Artifact 下载，用 Sideloadly 安装时签名）
+#   2) build-signed   —— 配置了 Secrets 后自动执行：云端签名 + 传 TestFlight（无线自动更新）
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+    branches: ['main']
+  schedule:
+    - cron: '0 3 1 * *'
+
+jobs:
+  # ============ 未签名 IPA（零配置可用） ============
+  build-unsigned:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Archive (unsigned)
+        run: |
+          xcodebuild -project ScanGun.xcodeproj \
+            -scheme ScanGun \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/ScanGun.xcarchive \
+            -currentProjectVersion ${GITHUB_RUN_NUMBER} \
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet archive
+
+      - name: Package IPA
+        run: |
+          mkdir -p build/Payload
+          cp -R build/ScanGun.xcarchive/Products/Applications/ScanGun.app build/Payload/
+          cd build && zip -qry ScanGun-unsigned.ipa Payload && cd ..
+          ls -la build/*.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScanGun-unsigned-ipa
+          path: build/ScanGun-unsigned.ipa
+          retention-days: 90
+
+  # ============ 签名 + TestFlight（配置 Secrets 后自动启用） ============
+  build-signed:
+    # 未配置任一 Secret 时自动跳过
+    if: ${{ secrets.ASC_KEY_ID != '' && secrets.TEAM_ID != '' }}
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Prepare App Store Connect API Key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          mkdir -p ~/private_keys
+          echo "$ASC_KEY_P8" | base64 --decode > ~/private_keys/AuthKey_${ASC_KEY_ID}.p8
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Archive
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          xcodebuild -project ScanGun.xcodeproj \
+            -scheme ScanGun \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/ScanGun.xcarchive \
+            -currentProjectVersion ${GITHUB_RUN_NUMBER} \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+            -authenticationKeyID ${ASC_KEY_ID} \
+            -authenticationKeyIssuerID ${ASC_ISSUER_ID} \
+            DEVELOPMENT_TEAM=${TEAM_ID} \
+            -quiet archive
+
+      - name: Export IPA
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          cat > ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>uploadSymbols</key><true/>
+            <key>destination</key><string>export</string>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath build/ScanGun.xcarchive \
+            -exportPath build/ipa \
+            -exportOptionsPlist ExportOptions.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+            -authenticationKeyID ${ASC_KEY_ID} \
+            -authenticationKeyIssuerID ${ASC_ISSUER_ID} \
+            DEVELOPMENT_TEAM=${TEAM_ID} \
+            -quiet
+          ls -la build/ipa/
+
+      - name: Upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          xcrun altool --upload-app \
+            -f build/ipa/ScanGun.ipa \
+            -t ios \
+            --apiKey ${ASC_KEY_ID} \
+            --apiIssuer ${ASC_ISSUER_ID} \
+            --verbose
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-build-log
+          path: build/
+          if-no-files-found: ignore

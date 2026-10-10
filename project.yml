@@ -1,0 +1,51 @@
+# XcodeGen 工程定义（云端 macOS 用 xcodegen 生成 .xcodeproj，Win10 无需 Xcode）
+# 文档: https://github.com/yonaskolb/XcodeGen
+name: ScanGun
+options:
+  bundleIdPrefix: com.scangun
+  deploymentTarget:
+    iOS: "13.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+    # 现代单尺寸图标（1024x1024）
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: ""
+
+targets:
+  ScanGun:
+    type: application
+    platform: iOS
+    sources:
+      - path: ScanGun/Sources
+      - path: ScanGun/Resources
+    info:
+      path: ScanGun/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: 无线扫码枪
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSCameraUsageDescription: 扫描条码/二维码并将内容发送到电脑
+        # TestFlight 出口合规：本应用不使用加密
+        ITSAppUsesNonExemptEncryption: false
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
+    settings:
+      base:
+        # ⚠️ 用户需改成自己在苹果后台注册的 Bundle ID（部署说明有步骤）
+        PRODUCT_BUNDLE_IDENTIFIER: com.scangun.app
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1"          # 仅 iPhone
+        # CI 通过 -allowProvisioningUpdates + App Store Connect API Key 自动签名
+        CODE_SIGN_STYLE: Automatic
