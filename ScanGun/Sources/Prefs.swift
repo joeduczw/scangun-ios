@@ -11,7 +11,6 @@ final class Prefs {
     private let kToken = "token"
     private let kDeviceName = "deviceName"
     private let kAutoMode = "autoMode"       // 自动扫描模式（默认手动）
-    private let kResend = "resendEnabled"    // 历史点击重发（默认关）
 
     var host: String {
         get { d.string(forKey: kHost) ?? "" }
@@ -40,9 +39,5 @@ final class Prefs {
     var autoMode: Bool {
         get { d.bool(forKey: kAutoMode) }
         set { d.set(newValue, forKey: kAutoMode) }
-    }
-    var resendEnabled: Bool {
-        get { d.bool(forKey: kResend) }
-        set { d.set(newValue, forKey: kResend) }
     }
 }

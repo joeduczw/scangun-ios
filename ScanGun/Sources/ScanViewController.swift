@@ -21,7 +21,6 @@ class ScanViewController: UIViewController {
     private let statsLabel = UILabel()
     private let clearBtn = UIButton(type: .system)
     private let historyTitle = UILabel()
-    private let resendSwitch = UISwitch()
     private let tableView = UITableView()
     private let manualField = UITextField()
     private let manualBtn = UIButton(type: .system)
@@ -155,27 +154,15 @@ class ScanViewController: UIViewController {
             clearBtn.leadingAnchor.constraint(greaterThanOrEqualTo: statsLabel.trailingAnchor, constant: 8)
         ])
 
-        // 历史标题 + 重发开关
+        // 历史标题
         historyTitle.text = "扫码历史"
         historyTitle.font = .boldSystemFont(ofSize: 14)
         historyTitle.textColor = UIColor(white: 0.85, alpha: 1)
         historyTitle.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(historyTitle)
-        let rsLabel = UILabel()
-        rsLabel.text = "点击重发"
-        rsLabel.font = .systemFont(ofSize: 12)
-        rsLabel.textColor = .lightGray
-        let rsWrap = UIStackView(arrangedSubviews: [rsLabel, resendSwitch])
-        rsWrap.spacing = 6
-        rsWrap.translatesAutoresizingMaskIntoConstraints = false
-        resendSwitch.isOn = Prefs.shared.resendEnabled
-        resendSwitch.addTarget(self, action: #selector(resendChanged), for: .valueChanged)
-        view.addSubview(rsWrap)
         NSLayoutConstraint.activate([
             historyTitle.topAnchor.constraint(equalTo: statsLabel.bottomAnchor, constant: 12),
-            historyTitle.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            rsWrap.centerYAnchor.constraint(equalTo: historyTitle.centerYAnchor),
-            rsWrap.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16)
+            historyTitle.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16)
         ])
 
         // 手动输入（⚠️ 必须先 addSubview：下方 tableView 的约束引用 manualField.topAnchor，
@@ -411,8 +398,6 @@ class ScanViewController: UIViewController {
         let fail = records.filter { $0.ok == false }.count
         let pending = records.filter { $0.ok == nil }.count
         statsLabel.text = "本次：\(total) ｜ 成功 \(ok) ｜ 失败 \(fail) ｜ 待确认 \(pending)"
-        historyTitle.text = records.isEmpty ? "扫码历史" :
-            (Prefs.shared.resendEnabled ? "扫码历史（点击重发）" : "扫码历史")
     }
 
     private func reindex() {
@@ -424,11 +409,6 @@ class ScanViewController: UIViewController {
         records.removeAll()
         recordIndex.removeAll()
         tableView.reloadData()
-        refreshStats()
-    }
-
-    @objc private func resendChanged() {
-        Prefs.shared.resendEnabled = resendSwitch.isOn
         refreshStats()
     }
 
@@ -517,11 +497,5 @@ extension ScanViewController: UITableViewDataSource, UITableViewDelegate {
         cell.backgroundColor = .clear
         cell.selectionStyle = .none
         return cell
-    }
-
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        guard Prefs.shared.resendEnabled else { return }
-        let r = records[indexPath.row]
-        sendCode(r.code, type: r.type)
     }
 }
