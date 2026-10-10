@@ -32,6 +32,9 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSCameraUsageDescription: 扫描条码/二维码并将内容发送到电脑
+        # ATS 默认禁止 ws:// 明文连接局域网 IP，必须放行本地网络（否则永远连不上客户机）
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         # TestFlight 出口合规：本应用不使用加密
         ITSAppUsesNonExemptEncryption: false
         UIApplicationSceneManifest:

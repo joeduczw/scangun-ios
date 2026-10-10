@@ -301,7 +301,14 @@ class ScanViewController: UIViewController {
             self.captureSession.addInput(input)
             self.captureSession.addOutput(output)
             output.setMetadataObjectsDelegate(self, queue: .main)
-            output.metadataObjectTypes = output.availableMetadataObjectTypes  // 全码制
+            // ⚠️ 不能直接赋 availableMetadataObjectTypes（iOS17/18 真机会因含
+            // session 此刻不支持的类型抛 NSInvalidArgumentException 闪退），
+            // 改为显式列表 + 过滤出实际支持的
+            let wanted: [AVMetadataObject.ObjectType] = [
+                .qr, .ean13, .ean8, .code128, .code39, .code93,
+                .upce, .interleaved2of5, .aztec, .pdf417, .dataMatrix
+            ]
+            output.metadataObjectTypes = wanted.filter { output.availableMetadataObjectTypes.contains($0) }
             self.captureSession.startRunning()
             DispatchQueue.main.async {
                 let layer = AVCaptureVideoPreviewLayer(session: self.captureSession)
