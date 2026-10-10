@@ -49,3 +49,12 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"          # 仅 iPhone
         # CI 通过 -allowProvisioningUpdates + App Store Connect API Key 自动签名
         CODE_SIGN_STYLE: Automatic
+
+# 显式生成共享 scheme（云端 xcodebuild -scheme 依赖它，避免"找不到 scheme"错误）
+schemes:
+  ScanGun:
+    build:
+      targets:
+        ScanGun: all
+    archive:
+      config: Release

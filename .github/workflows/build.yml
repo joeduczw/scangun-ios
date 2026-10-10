@@ -16,9 +16,18 @@ jobs:
   # ============ 未签名 IPA（零配置可用） ============
   build-unsigned:
     runs-on: macos-15
+    outputs:
+      # GitHub 限制：job 级 if 不能直接用 secrets 上下文，先在本 job 检测再传给 build-signed
+      secrets_ready: ${{ steps.check-secrets.outputs.ready }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Check signing secrets
+        id: check-secrets
+        env:
+          READY: ${{ secrets.ASC_KEY_ID != '' && secrets.TEAM_ID != '' }}
+        run: echo "ready=$READY" >> "$GITHUB_OUTPUT"
 
       - name: Install xcodegen
         run: brew install xcodegen
@@ -52,8 +61,9 @@ jobs:
 
   # ============ 签名 + TestFlight（配置 Secrets 后自动启用） ============
   build-signed:
-    # 未配置任一 Secret 时自动跳过
-    if: ${{ secrets.ASC_KEY_ID != '' && secrets.TEAM_ID != '' }}
+    # 未配置任一 Secret 时自动跳过（检测结果来自 build-unsigned 的输出）
+    needs: build-unsigned
+    if: needs.build-unsigned.outputs.secrets_ready == 'true'
     runs-on: macos-15
     steps:
       - name: Checkout
