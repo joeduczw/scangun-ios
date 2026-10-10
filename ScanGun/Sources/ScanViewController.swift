@@ -307,7 +307,7 @@ class ScanViewController: UIViewController {
                 let layer = AVCaptureVideoPreviewLayer(session: self.captureSession)
                 layer.videoGravity = .resizeAspectFill
                 layer.frame = self.previewView.bounds
-                self.previewView.insertSublayer(layer, at: 0)
+                self.previewView.layer.insertSublayer(layer, at: 0)
                 self.previewLayer = layer
             }
         }

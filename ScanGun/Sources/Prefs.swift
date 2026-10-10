@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// 配置持久化（UserDefaults）
 final class Prefs {
