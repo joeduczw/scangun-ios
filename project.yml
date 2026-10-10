@@ -49,7 +49,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.scangun.app
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
-        TARGETED_DEVICE_FAMILY: "1"          # 仅 iPhone
+        TARGETED_DEVICE_FAMILY: "1,2"        # iPhone + iPad（iPad 原生运行，避免兼容模式布局异常）
         # CI 通过 -allowProvisioningUpdates + App Store Connect API Key 自动签名
         CODE_SIGN_STYLE: Automatic
 

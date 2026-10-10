@@ -104,6 +104,9 @@ class ScanViewController: UIViewController {
             previewView.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
             previewView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             previewView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            // 高度随宽度走（iPhone 竖屏比例），但设上限：否则 iPad 宽 768 时高度达 921，
+            // 会把统计栏/历史全部挤出屏幕外（iPad 实测问题）
+            previewView.heightAnchor.constraint(lessThanOrEqualToConstant: 440),
             previewView.heightAnchor.constraint(equalTo: previewView.widthAnchor, multiplier: 1.2)
         ])
 
@@ -139,6 +142,8 @@ class ScanViewController: UIViewController {
         // 统计栏
         statsLabel.font = .systemFont(ofSize: 13)
         statsLabel.textColor = .white
+        statsLabel.adjustsFontSizeToFitWidth = true    // 窄屏/长文本自动缩字，保证可见
+        statsLabel.minimumScaleFactor = 0.6
         statsLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(statsLabel)
         clearBtn.setTitle("清零", for: .normal)
@@ -149,9 +154,9 @@ class ScanViewController: UIViewController {
         NSLayoutConstraint.activate([
             statsLabel.topAnchor.constraint(equalTo: scanBtn.bottomAnchor, constant: 12),
             statsLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            statsLabel.trailingAnchor.constraint(lessThanOrEqualTo: clearBtn.leadingAnchor, constant: -8),
             clearBtn.centerYAnchor.constraint(equalTo: statsLabel.centerYAnchor),
-            clearBtn.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            clearBtn.leadingAnchor.constraint(greaterThanOrEqualTo: statsLabel.trailingAnchor, constant: 8)
+            clearBtn.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16)
         ])
 
         // 历史标题
