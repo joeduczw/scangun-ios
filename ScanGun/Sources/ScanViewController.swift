@@ -178,6 +178,19 @@ class ScanViewController: UIViewController {
             rsWrap.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16)
         ])
 
+        // 手动输入（⚠️ 必须先 addSubview：下方 tableView 的约束引用 manualField.topAnchor，
+        // iOS 26 严格执行"约束双方须在同一层级"，激活时不在层级中会直接抛异常闪退）
+        manualField.placeholder = "手动输入条码（备用）"
+        manualField.borderStyle = .roundedRect
+        manualField.autocorrectionType = .no
+        manualField.keyboardType = .numbersAndPunctuation
+        manualField.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(manualField)
+        manualBtn.setTitle("发送", for: .normal)
+        manualBtn.translatesAutoresizingMaskIntoConstraints = false
+        manualBtn.addTarget(self, action: #selector(manualTapped), for: .touchUpInside)
+        view.addSubview(manualBtn)
+
         // 历史列表
         tableView.dataSource = self
         tableView.delegate = self
@@ -193,17 +206,7 @@ class ScanViewController: UIViewController {
             tableView.bottomAnchor.constraint(equalTo: manualField.topAnchor, constant: -8)
         ])
 
-        // 手动输入
-        manualField.placeholder = "手动输入条码（备用）"
-        manualField.borderStyle = .roundedRect
-        manualField.autocorrectionType = .no
-        manualField.keyboardType = .numbersAndPunctuation
-        manualField.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(manualField)
-        manualBtn.setTitle("发送", for: .normal)
-        manualBtn.translatesAutoresizingMaskIntoConstraints = false
-        manualBtn.addTarget(self, action: #selector(manualTapped), for: .touchUpInside)
-        view.addSubview(manualBtn)
+        // 手动输入布局约束
         NSLayoutConstraint.activate([
             manualField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             manualField.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -12),
