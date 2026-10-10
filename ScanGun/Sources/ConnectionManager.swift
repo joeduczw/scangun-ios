@@ -115,9 +115,12 @@ final class ConnectionManager {
         let parts = text.split(separator: "|", maxSplits: 4).map(String.init)
         guard let cmd = parts.first else { return }   // 空消息防御（越界崩溃）
         if cmd == "WELCOME" {
-            DispatchQueue.main.async { self.onWelcome?(parts.count > 1 ? parts[1] : "客户机") }
-            // 首次连接成功：重置退避、补发断线队列
+            let machine = parts.count > 1 ? parts[1] : "客户机"
+            DispatchQueue.main.async { self.onWelcome?(machine) }
             queue.async {
+                // ⚠️ 核心修复：WELCOME 到达才算连接真正建立（原 bug：漏了这行，
+                // state 永远停在 .connecting，扫码全部进待发队列报"未连接客户机"）
+                self.setState(.connected)
                 self.reconnectAttempt = 0
                 self.flushOutbox()
             }
