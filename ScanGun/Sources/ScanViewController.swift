@@ -505,14 +505,14 @@ class ScanViewController: UIViewController, ConnListener {
             cntStored += 1
             HistoryStore.shared.addStored(code)
             Beep.ok()
-            flash("已存储（本文件 \(n) 条）\n\(code)", state: .good)
+            flash("已存储（本文件 \(n) 条）\n\(code)", style: .good)
             renderStats()
             return
         }
         let msgId = ConnectionManager.shared.sendScan(code, type: type)
         HistoryStore.shared.addPending(msgId, code)
         statsSend(msgId)
-        flash("已发送\n\(code)", state: .neutral)
+        flash("已发送\n\(code)", style: .neutral)
     }
 
     // MARK: - ConnListener
@@ -524,10 +524,10 @@ class ScanViewController: UIViewController, ConnListener {
         HistoryStore.shared.update(msgId, status: ok ? .ok : .fail, reason: reason)
         if ok {
             Beep.ok()
-            flash("√ 已录入\n\(code)", state: .good)
+            flash("√ 已录入\n\(code)", style: .good)
         } else {
             Beep.fail()
-            flash("× 未录入\n\(reason.isEmpty ? "客户机未确认" : reason)", state: .bad)
+            flash("× 未录入\n\(reason.isEmpty ? "客户机未确认" : reason)", style: .bad)
         }
     }
 
@@ -552,13 +552,15 @@ class ScanViewController: UIViewController, ConnListener {
     }
 
     // MARK: - 闪烁反馈层
-    private func flash(_ text: String, state: Bool?) {
+    private enum FlashStyle { case good, bad, neutral }
+
+    private func flash(_ text: String, style: FlashStyle) {
         flashLabel.text = text
         flashView.backgroundColor = {
-            switch state {
-            case .some(true): return UIColor(hex: 0x1B5E20, alpha: 0.8)
-            case .some(false): return UIColor(hex: 0xB71C1C, alpha: 0.8)
-            default: return UIColor(white: 0, alpha: 0.8)
+            switch style {
+            case .good: return UIColor(hex: 0x1B5E20, alpha: 0.8)
+            case .bad: return UIColor(hex: 0xB71C1C, alpha: 0.8)
+            case .neutral: return UIColor(white: 0, alpha: 0.8)
             }
         }()
         flashView.isHidden = false
