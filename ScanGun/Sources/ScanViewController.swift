@@ -1,56 +1,73 @@
 import UIKit
 import AVFoundation
 
-private struct ScanRecord {
-    let msgId: String
-    let code: String
-    let type: String
-    var ok: Bool?          // nil=待确认
-    var lateFixed = false  // 超时后迟到成功回执已修正
-    let time: Date
-}
+/// 主界面（复刻安卓版）：
+/// - 状态横幅（未配对/连接中/已连接/断开，点击进配对）
+/// - 存储控制行：存储开关（开=存储扫描只存不发，关=实时扫描即扫即发，文字随状态）/ 结束存档 / 储存发送
+/// - 相机预览区：中央取景框（多码同屏只认框内码，位置偏上）+ 变焦手势 + 闪光灯 + 扫描按钮（手动模式）
+/// - 功能按钮行：模式 / 闪光灯 / 手动输入 / 重新配对
+/// - 统计栏：本次统计 + 清零 + 扫描历史
+class ScanViewController: UIViewController, ConnListener {
 
-class ScanViewController: UIViewController {
     // MARK: - UI
-    private let statusLabel = UILabel()
-    private let modeBtn = UIButton(type: .system)
-    private let pairBtn = UIButton(type: .system)
+    private let banner = UIButton(type: .system)
+    private let storageLabel = UILabel()
+    private let storageSwitch = UISwitch()
+    private let finishBtn = UIButton(type: .system)
+    private let sendFilesBtn = UIButton(type: .system)
     private let previewView = UIView()
     private let frameBox = UIView()
+    private let frameTip = UILabel()
     private let scanBtn = UIButton(type: .system)
-    private let statsLabel = UILabel()
-    private let clearBtn = UIButton(type: .system)
-    private let historyTitle = UILabel()
-    private let tableView = UITableView()
-    private let manualField = UITextField()
-    private let manualBtn = UIButton(type: .system)
     private let flashView = UIView()
     private let flashLabel = UILabel()
+    private let modeBtn = UIButton(type: .system)
+    private let torchBtn = UIButton(type: .system)
+    private let manualBtn = UIButton(type: .system)
+    private let pairBtn = UIButton(type: .system)
+    private let statsLabel = UILabel()
+    private let clearBtn = UIButton(type: .system)
+    private let historyBtn = UIButton(type: .system)
 
     // MARK: - 相机
     private let captureSession = AVCaptureSession()
     private let sessionQueue = DispatchQueue(label: "camera")
     private var previewLayer: AVCaptureVideoPreviewLayer?
-    private var metadataOutput: AVCaptureMetadataOutput?
+    private var captureDevice: AVCaptureDevice?
     private var cameraAuthorized = false
+    private var pinchStartZoom: CGFloat = 1
+    private var torchOn = false
 
     // MARK: - 扫描状态
-    private var armed = false                 // 手动模式：按钮按下后待识别
-    private var manualTimeout: DispatchWorkItem?
+    private var scanSession = false          // 手动模式：按钮按下后待识别
+    private var sessionTimeout: DispatchWorkItem?
     private var lastCode = ""
     private var lastCodeAt = Date.distantPast
+    private var lastSendAt = Date.distantPast
 
-    // MARK: - 记录
-    private var records: [ScanRecord] = []
-    private var recordIndex: [String: Int] = [:]
+    // MARK: - 本次统计（APP 启动后累计，可手动清零，重启自动归零）
+    private var cntTotal = 0
+    private var cntOk = 0
+    private var cntFail = 0
+    private var cntPending = 0
+    private var cntStored = 0
+    private var statsState: [String: Int] = [:]   // msgId -> 0发送/1成功/2失败
 
     // MARK: - 生命周期
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor(white: 0.1, alpha: 1)
+        view.backgroundColor = UIColor(hex: 0x0E0E0E)
         buildUI()
         setupCamera()
-        bindConnection()
+        ConnectionManager.shared.addListener(self)
+        ConnectionManager.shared.connect()
+        updateBanner()
+        renderStats()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        refreshFilesBtn()
     }
 
     override func viewDidLayoutSubviews() {
@@ -62,211 +79,207 @@ class ScanViewController: UIViewController {
     private func buildUI() {
         let safe = view.safeAreaLayoutGuide
 
-        // 状态横幅
-        statusLabel.textAlignment = .center
-        statusLabel.font = .systemFont(ofSize: 14, weight: .medium)
-        statusLabel.textColor = .white
-        statusLabel.backgroundColor = UIColor(white: 0.25, alpha: 1)
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(statusLabel)
+        // 状态横幅（点击进入配对）
+        banner.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
+        banner.setTitleColor(.white, for: .normal)
+        banner.translatesAutoresizingMaskIntoConstraints = false
+        banner.addTarget(self, action: #selector(bannerTapped), for: .touchUpInside)
+        view.addSubview(banner)
         NSLayoutConstraint.activate([
-            statusLabel.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
-            statusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-            statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            statusLabel.heightAnchor.constraint(equalToConstant: 32)
+            banner.topAnchor.constraint(equalTo: safe.topAnchor),
+            banner.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            banner.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            banner.heightAnchor.constraint(equalToConstant: 44)
         ])
 
-        // 模式按钮（左上）
-        styleNavBtn(modeBtn, title: "模式:手动")
-        modeBtn.addTarget(self, action: #selector(modeTapped), for: .touchUpInside)
+        // 存储控制行：开关 + 结束存档 + 储存发送
+        let storageRow = UIStackView()
+        storageRow.axis = .horizontal
+        storageRow.spacing = 10
+        storageRow.alignment = .center
+        storageRow.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(storageRow)
         NSLayoutConstraint.activate([
-            modeBtn.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
-            modeBtn.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-            modeBtn.widthAnchor.constraint(equalToConstant: 86),
-            modeBtn.heightAnchor.constraint(equalToConstant: 32)
+            storageRow.topAnchor.constraint(equalTo: banner.bottomAnchor),
+            storageRow.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
+            storageRow.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
+            storageRow.heightAnchor.constraint(equalToConstant: 52)
         ])
 
-        // 配对按钮（右上）
-        styleNavBtn(pairBtn, title: "配对")
-        pairBtn.addTarget(self, action: #selector(pairTapped), for: .touchUpInside)
-        NSLayoutConstraint.activate([
-            pairBtn.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
-            pairBtn.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            pairBtn.widthAnchor.constraint(equalToConstant: 64),
-            pairBtn.heightAnchor.constraint(equalToConstant: 32)
-        ])
+        storageLabel.font = .systemFont(ofSize: 14, weight: .medium)
+        storageLabel.textColor = .white
+        storageRow.addArrangedSubview(storageLabel)
+        storageSwitch.onTintColor = UIColor(hex: 0x2E7D32)
+        storageSwitch.transform = CGAffineTransform(scaleX: 0.82, y: 0.82)
+        storageSwitch.addTarget(self, action: #selector(storageToggled), for: .valueChanged)
+        storageRow.addArrangedSubview(storageSwitch)
 
-        // 相机预览
+        styleBtn(finishBtn, title: "结束存档")
+        finishBtn.addTarget(self, action: #selector(finishTapped), for: .touchUpInside)
+        storageRow.addArrangedSubview(finishBtn)
+        styleBtn(sendFilesBtn, title: "储存发送")
+        sendFilesBtn.addTarget(self, action: #selector(sendFilesTapped), for: .touchUpInside)
+        storageRow.addArrangedSubview(sendFilesBtn)
+        finishBtn.widthAnchor.constraint(equalTo: sendFilesBtn.widthAnchor).isActive = true
+
+        // 相机预览区（占据剩余空间）
         previewView.translatesAutoresizingMaskIntoConstraints = false
         previewView.backgroundColor = .black
+        previewView.clipsToBounds = true
         view.addSubview(previewView)
         NSLayoutConstraint.activate([
-            previewView.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 8),
+            previewView.topAnchor.constraint(equalTo: storageRow.bottomAnchor),
             previewView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             previewView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            // 高度随宽度走（iPhone 竖屏比例），但设上限：否则 iPad 宽 768 时高度达 921，
-            // 会把统计栏/历史全部挤出屏幕外（iPad 实测问题）
-            previewView.heightAnchor.constraint(lessThanOrEqualToConstant: 440),
-            previewView.heightAnchor.constraint(equalTo: previewView.widthAnchor, multiplier: 1.2)
+            previewView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
-        // 取景框
-        frameBox.layer.borderColor = UIColor(white: 1, alpha: 0.9).cgColor
+        // 中央取景框：宽66%、高26%、中心在预览区32%高度处（偏上且完整可见）
+        frameBox.layer.borderColor = UIColor(white: 1, alpha: 0.85).cgColor
         frameBox.layer.borderWidth = 2
-        frameBox.layer.cornerRadius = 12
+        frameBox.layer.cornerRadius = 14
         frameBox.translatesAutoresizingMaskIntoConstraints = false
         previewView.addSubview(frameBox)
+        frameBox.widthAnchor.constraint(equalTo: previewView.widthAnchor, multiplier: 0.66).isActive = true
+        frameBox.heightAnchor.constraint(equalTo: previewView.heightAnchor, multiplier: 0.26).isActive = true
+        frameBox.centerXAnchor.constraint(equalTo: previewView.centerXAnchor).isActive = true
+        // top = 预览区高度 × 0.19（=中心在32%处）：.top 对 .height 的比例约束
+        NSLayoutConstraint(item: frameBox, attribute: .top, relatedBy: .equal,
+                           toItem: previewView, attribute: .height,
+                           multiplier: 0.19, constant: 0).isActive = true
+
+        // 取景框下沿提示
+        frameTip.text = "将条码对准框内"
+        frameTip.font = .systemFont(ofSize: 12)
+        frameTip.textColor = UIColor(white: 1, alpha: 0.8)
+        frameTip.translatesAutoresizingMaskIntoConstraints = false
+        previewView.addSubview(frameTip)
         NSLayoutConstraint.activate([
-            frameBox.centerXAnchor.constraint(equalTo: previewView.centerXAnchor),
-            frameBox.centerYAnchor.constraint(equalTo: previewView.centerYAnchor),
-            frameBox.widthAnchor.constraint(equalTo: previewView.widthAnchor, multiplier: 0.8),
-            frameBox.heightAnchor.constraint(equalToConstant: 170)
+            frameTip.topAnchor.constraint(equalTo: frameBox.bottomAnchor, constant: 12),
+            frameTip.centerXAnchor.constraint(equalTo: previewView.centerXAnchor)
         ])
 
-        // 扫描按钮（手动模式）
+        // 扫码结果闪烁反馈层（预览区居中）
+        flashView.backgroundColor = UIColor(white: 0, alpha: 0.8)
+        flashView.isHidden = true
+        flashView.layer.cornerRadius = 10
+        flashView.translatesAutoresizingMaskIntoConstraints = false
+        previewView.addSubview(flashView)
+        flashLabel.font = .systemFont(ofSize: 17, weight: .bold)
+        flashLabel.textAlignment = .center
+        flashLabel.numberOfLines = 0
+        flashLabel.textColor = .white
+        flashLabel.adjustsFontSizeToFitWidth = true
+        flashLabel.minimumScaleFactor = 0.5
+        flashLabel.translatesAutoresizingMaskIntoConstraints = false
+        flashView.addSubview(flashLabel)
+        NSLayoutConstraint.activate([
+            flashView.centerXAnchor.constraint(equalTo: previewView.centerXAnchor),
+            flashView.centerYAnchor.constraint(equalTo: previewView.centerYAnchor),
+            flashView.leadingAnchor.constraint(greaterThanOrEqualTo: previewView.leadingAnchor, constant: 20),
+            flashView.trailingAnchor.constraint(lessThanOrEqualTo: previewView.trailingAnchor, constant: -20),
+            flashLabel.topAnchor.constraint(equalTo: flashView.topAnchor, constant: 16),
+            flashLabel.bottomAnchor.constraint(equalTo: flashView.bottomAnchor, constant: -16),
+            flashLabel.leadingAnchor.constraint(equalTo: flashView.leadingAnchor, constant: 18),
+            flashLabel.trailingAnchor.constraint(equalTo: flashView.trailingAnchor, constant: -18)
+        ])
+
+        // 手动模式专用大扫描按钮（预览区底部）
         scanBtn.setTitle("扫 描", for: .normal)
         scanBtn.titleLabel?.font = .boldSystemFont(ofSize: 20)
-        scanBtn.backgroundColor = UIColor(red: 0.18, green: 0.64, blue: 0.33, alpha: 1)
+        scanBtn.backgroundColor = UIColor(hex: 0x2E7D32)
         scanBtn.setTitleColor(.white, for: .normal)
         scanBtn.layer.cornerRadius = 12
         scanBtn.translatesAutoresizingMaskIntoConstraints = false
         scanBtn.addTarget(self, action: #selector(scanTapped), for: .touchUpInside)
-        view.addSubview(scanBtn)
+        previewView.addSubview(scanBtn)
         NSLayoutConstraint.activate([
-            scanBtn.topAnchor.constraint(equalTo: previewView.bottomAnchor, constant: 12),
-            scanBtn.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            scanBtn.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            scanBtn.heightAnchor.constraint(equalToConstant: 54)
+            scanBtn.centerXAnchor.constraint(equalTo: previewView.centerXAnchor),
+            scanBtn.bottomAnchor.constraint(equalTo: previewView.bottomAnchor, constant: -20),
+            scanBtn.widthAnchor.constraint(equalToConstant: 170),
+            scanBtn.heightAnchor.constraint(equalToConstant: 58)
         ])
+
+        // 功能按钮行：模式 / 闪光灯 / 手动输入 / 重新配对
+        let funcRow = UIStackView()
+        funcRow.axis = .horizontal
+        funcRow.distribution = .fillEqually
+        funcRow.spacing = 8
+        funcRow.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(funcRow)
+        NSLayoutConstraint.activate([
+            funcRow.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            funcRow.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 10),
+            funcRow.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -10),
+            funcRow.heightAnchor.constraint(equalToConstant: 52)
+        ])
+        for (b, sel) in [(modeBtn, #selector(modeTapped)), (torchBtn, #selector(torchTapped)),
+                         (manualBtn, #selector(manualTapped)), (pairBtn, #selector(pairTapped))] {
+            styleBtn(b, title: "")
+            b.titleLabel?.font = .systemFont(ofSize: 13)
+            b.addTarget(self, action: sel, for: .touchUpInside)
+            funcRow.addArrangedSubview(b)
+        }
 
         // 统计栏
-        statsLabel.font = .systemFont(ofSize: 13)
+        let statsRow = UIStackView()
+        statsRow.axis = .horizontal
+        statsRow.spacing = 8
+        statsRow.alignment = .center
+        statsRow.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(statsRow)
+        NSLayoutConstraint.activate([
+            statsRow.bottomAnchor.constraint(equalTo: funcRow.topAnchor, constant: -6),
+            statsRow.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
+            statsRow.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
+            statsRow.heightAnchor.constraint(equalToConstant: 44)
+        ])
+        statsLabel.font = .systemFont(ofSize: 12)
         statsLabel.textColor = .white
-        statsLabel.adjustsFontSizeToFitWidth = true    // 窄屏/长文本自动缩字，保证可见
-        statsLabel.minimumScaleFactor = 0.6
-        statsLabel.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(statsLabel)
-        clearBtn.setTitle("清零", for: .normal)
-        clearBtn.titleLabel?.font = .systemFont(ofSize: 13)
-        clearBtn.translatesAutoresizingMaskIntoConstraints = false
+        statsLabel.adjustsFontSizeToFitWidth = true
+        statsLabel.minimumScaleFactor = 0.55
+        statsRow.addArrangedSubview(statsLabel)
+        styleBtn(clearBtn, title: "清零")
         clearBtn.addTarget(self, action: #selector(clearTapped), for: .touchUpInside)
-        view.addSubview(clearBtn)
-        NSLayoutConstraint.activate([
-            statsLabel.topAnchor.constraint(equalTo: scanBtn.bottomAnchor, constant: 12),
-            statsLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            statsLabel.trailingAnchor.constraint(lessThanOrEqualTo: clearBtn.leadingAnchor, constant: -8),
-            clearBtn.centerYAnchor.constraint(equalTo: statsLabel.centerYAnchor),
-            clearBtn.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16)
-        ])
+        statsRow.addArrangedSubview(clearBtn)
+        styleBtn(historyBtn, title: "扫描历史")
+        historyBtn.addTarget(self, action: #selector(historyTapped), for: .touchUpInside)
+        statsRow.addArrangedSubview(historyBtn)
 
-        // 历史标题
-        historyTitle.text = "扫码历史"
-        historyTitle.font = .boldSystemFont(ofSize: 14)
-        historyTitle.textColor = UIColor(white: 0.85, alpha: 1)
-        historyTitle.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(historyTitle)
-        NSLayoutConstraint.activate([
-            historyTitle.topAnchor.constraint(equalTo: statsLabel.bottomAnchor, constant: 12),
-            historyTitle.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16)
-        ])
+        // 变焦手势：双击 1x↔2.5x；双指捏合自由缩放（识别小/远二维码用）
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinchZoom(_:)))
+        previewView.addGestureRecognizer(pinch)
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(doubleTapZoom))
+        doubleTap.numberOfTapsRequired = 2
+        previewView.addGestureRecognizer(doubleTap)
 
-        // 手动输入（⚠️ 必须先 addSubview：下方 tableView 的约束引用 manualField.topAnchor，
-        // iOS 26 严格执行"约束双方须在同一层级"，激活时不在层级中会直接抛异常闪退）
-        manualField.placeholder = "手动输入条码（备用）"
-        manualField.borderStyle = .roundedRect
-        manualField.autocorrectionType = .no
-        manualField.keyboardType = .numbersAndPunctuation
-        manualField.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(manualField)
-        manualBtn.setTitle("发送", for: .normal)
-        manualBtn.translatesAutoresizingMaskIntoConstraints = false
-        manualBtn.addTarget(self, action: #selector(manualTapped), for: .touchUpInside)
-        view.addSubview(manualBtn)
-
-        // 历史列表
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.backgroundColor = .clear
-        tableView.separatorColor = UIColor(white: 0.3, alpha: 1)
-        tableView.rowHeight = 48
-        tableView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(tableView)
-        NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: historyTitle.bottomAnchor, constant: 4),
-            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: manualField.topAnchor, constant: -8)
-        ])
-
-        // 手动输入布局约束
-        NSLayoutConstraint.activate([
-            manualField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            manualField.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -12),
-            manualField.heightAnchor.constraint(equalToConstant: 40),
-            manualBtn.leadingAnchor.constraint(equalTo: manualField.trailingAnchor, constant: 8),
-            manualBtn.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            manualBtn.centerYAnchor.constraint(equalTo: manualField.centerYAnchor),
-            manualBtn.widthAnchor.constraint(equalToConstant: 64),
-            manualBtn.heightAnchor.constraint(equalToConstant: 40)
-        ])
-
-        // 全屏闪烁反馈层
-        flashView.backgroundColor = UIColor(white: 0, alpha: 0.75)
-        flashView.isHidden = true
-        flashView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(flashView)
-        flashLabel.font = .systemFont(ofSize: 40, weight: .bold)
-        flashLabel.textAlignment = .center
-        flashLabel.translatesAutoresizingMaskIntoConstraints = false
-        flashView.addSubview(flashLabel)
-        NSLayoutConstraint.activate([
-            flashView.topAnchor.constraint(equalTo: view.topAnchor),
-            flashView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            flashView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            flashView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            flashLabel.centerXAnchor.constraint(equalTo: flashView.centerXAnchor),
-            flashLabel.centerYAnchor.constraint(equalTo: flashView.centerYAnchor)
-        ])
-
-        applyModeUI()
-        refreshStats()
+        applyStorageUI()
+        applyMode()
     }
 
-    private func styleNavBtn(_ b: UIButton, title: String) {
+    private func styleBtn(_ b: UIButton, title: String) {
         b.setTitle(title, for: .normal)
         b.setTitleColor(.white, for: .normal)
-        b.backgroundColor = UIColor(white: 0.25, alpha: 1)
+        b.backgroundColor = UIColor(hex: 0x2A2A2A)
         b.layer.cornerRadius = 8
-        b.titleLabel?.font = .systemFont(ofSize: 13)
+        b.titleLabel?.font = .systemFont(ofSize: 14)
         b.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(b)
     }
 
-    // MARK: - 连接回调
-    private func bindConnection() {
-        ConnectionManager.shared.onStateChanged = { [weak self] state in
-            guard let self = self else { return }
-            switch state {
-            case .connected: return  // 等 WELCOME 显示机器名
-            case .connecting:
-                self.setStatus("连接中…", color: .systemYellow, bg: UIColor(white: 0.2, alpha: 1))
-            case .disconnected:
-                self.setStatus("已断开，自动重连中…", color: .systemRed, bg: UIColor(white: 0.2, alpha: 1))
-            }
-        }
-        ConnectionManager.shared.onWelcome = { [weak self] machine in
-            self?.setStatus("已连接：\(machine)", color: .systemGreen, bg: UIColor(white: 0.2, alpha: 1))
-        }
-        ConnectionManager.shared.onAck = { [weak self] msgId, code, ok, reason in
-            self?.handleAck(msgId: msgId, code: code, ok: ok, reason: reason)
-        }
-        ConnectionManager.shared.connect()
+    // MARK: - 存储/模式 UI
+    private func applyStorageUI() {
+        let on = Prefs.shared.storageMode
+        storageLabel.text = on ? "存储扫描" : "实时扫描"
+        storageSwitch.setOn(on, animated: false)
     }
 
-    private func setStatus(_ text: String, color: UIColor, bg: UIColor) {
-        statusLabel.text = text
-        statusLabel.textColor = color
-        statusLabel.backgroundColor = bg
+    @objc private func storageToggled() {
+        let on = storageSwitch.isOn
+        Prefs.shared.storageMode = on
+        applyStorageUI()
+        renderStats()
+        CenterToast.show(on ? "存储扫描已开启：扫码只存不发，在「储存发送」中统一发送"
+                            : "存储扫描已关闭：扫码恢复即扫即发")
     }
 
     // MARK: - 相机
@@ -304,6 +317,7 @@ class ScanViewController: UIViewController {
                 .upce, .interleaved2of5, .aztec, .pdf417, .dataMatrix
             ]
             output.metadataObjectTypes = wanted.filter { output.availableMetadataObjectTypes.contains($0) }
+            self.captureDevice = device
             self.captureSession.startRunning()
             DispatchQueue.main.async {
                 let layer = AVCaptureVideoPreviewLayer(session: self.captureSession)
@@ -323,140 +337,320 @@ class ScanViewController: UIViewController {
         present(a, animated: true)
     }
 
-    // MARK: - 扫码动作
-    @objc private func scanTapped() {
-        guard cameraAuthorized else { return setupCamera() }
-        if armed {
-            // 识别中再点=取消
-            disarm(timeout: false)
+    // MARK: - 变焦 / 闪光灯
+    @objc private func pinchZoom(_ g: UIPinchGestureRecognizer) {
+        guard let d = captureDevice else { return }
+        if g.state == .began { pinchStartZoom = d.videoZoomFactor }
+        let maxZ = min(d.activeFormat.videoMaxZoomFactor, 8)
+        let f = max(1, min(maxZ, pinchStartZoom * g.scale))
+        try? d.lockForConfiguration()
+        d.videoZoomFactor = f
+        d.unlockForConfiguration()
+    }
+
+    @objc private func doubleTapZoom() {
+        guard let d = captureDevice else { return }
+        let target: CGFloat = d.videoZoomFactor > 1.05 ? 1 : min(2.5, d.activeFormat.videoMaxZoomFactor)
+        try? d.lockForConfiguration()
+        d.videoZoomFactor = target
+        d.unlockForConfiguration()
+    }
+
+    @objc private func torchTapped() {
+        guard let d = captureDevice, d.hasTorch else {
+            CenterToast.show("此设备不支持闪光灯")
             return
         }
-        armed = true
-        scanBtn.setTitle("识别中…（点击取消）", for: .normal)
-        scanBtn.backgroundColor = UIColor(white: 0.35, alpha: 1)
-        let work = DispatchWorkItem { [weak self] in
-            self?.disarm(timeout: true)
+        torchOn.toggle()
+        try? d.lockForConfiguration()
+        d.torchMode = torchOn ? .on : .off
+        d.unlockForConfiguration()
+        torchBtn.setTitle(torchOn ? "闪光灯 开" : "闪光灯 关", for: .normal)
+    }
+
+    // MARK: - 扫描动作（手动会话：按一下扫一次；5 秒未识别自动结束）
+    @objc private func scanTapped() {
+        guard cameraAuthorized else { return setupCamera() }
+        if scanSession {
+            endSession()
+            CenterToast.show("已取消本次扫描")
+            return
         }
-        manualTimeout = work
+        scanSession = true
+        scanBtn.setTitle("识别中…\n（点按取消）", for: .normal)
+        scanBtn.backgroundColor = UIColor(hex: 0x555555)
+        sessionTimeout?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            if self?.scanSession == true {
+                self?.endSession()
+                CenterToast.show("未识别到条码")
+            }
+        }
+        sessionTimeout = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
     }
 
-    private func disarm(timeout: Bool) {
-        armed = false
-        manualTimeout?.cancel()
-        manualTimeout = nil
-        applyModeUI()
-        if timeout { flash(text: "未识别", symbol: false) }
+    private func endSession() {
+        scanSession = false
+        sessionTimeout?.cancel()
+        sessionTimeout = nil
+        scanBtn.setTitle("扫 描", for: .normal)
+        scanBtn.backgroundColor = UIColor(hex: 0x2E7D32)
     }
 
+    // MARK: - 模式
     @objc private func modeTapped() {
-        Prefs.shared.autoMode.toggle()
-        applyModeUI()
+        Prefs.shared.manualMode.toggle()
+        applyMode()
+        CenterToast.show(Prefs.shared.manualMode ? "已切换为手动扫描（按一下扫一次）" : "已切换为自动扫描")
     }
 
-    private func applyModeUI() {
-        let auto = Prefs.shared.autoMode
-        modeBtn.setTitle(auto ? "模式:自动" : "模式:手动", for: .normal)
-        scanBtn.isHidden = auto
-        if !auto {
-            scanBtn.setTitle("扫 描", for: .normal)
-            scanBtn.backgroundColor = UIColor(red: 0.18, green: 0.64, blue: 0.33, alpha: 1)
-        }
-        armed = false
+    private func applyMode() {
+        let manual = Prefs.shared.manualMode
+        modeBtn.setTitle(manual ? "模式：手动" : "模式：自动", for: .normal)
+        scanBtn.isHidden = !manual
+        endSession()
     }
 
-    @objc private func pairTapped() {
+    // MARK: - 手动输入 / 配对 / 历史跳转
+    @objc private func manualTapped() {
+        let a = UIAlertController(title: "手动输入", message: nil, preferredStyle: .alert)
+        a.addTextField { $0.placeholder = "输入要发送的内容" }
+        a.addAction(UIAlertAction(title: "发送", style: .default) { _ in
+            let t = a.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !t.isEmpty { self.onScan(t, "手动输入") }
+        })
+        a.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(a, animated: true)
+    }
+
+    @objc private func bannerTapped() { presentPairing() }
+    @objc private func pairTapped() { presentPairing() }
+
+    private func presentPairing() {
         let nav = UINavigationController(rootViewController: PairingViewController())
         present(nav, animated: true)
     }
 
-    // MARK: - 发送与 ACK
-    private func sendCode(_ code: String, type: String) {
-        let msgId = ConnectionManager.shared.sendScan(code, type: type)
-        records.insert(ScanRecord(msgId: msgId, code: code, type: type, ok: nil,
-                                  time: Date()), at: 0)
-        reindex()
-        tableView.reloadData()
-        refreshStats()
+    @objc private func historyTapped() {
+        present(HistoryViewController(), animated: true)
     }
 
-    private func handleAck(msgId: String, code: String, ok: Bool, reason: String) {
-        // 找对应记录（按 msgId；超时后迟到的成功回执会把失败覆盖修正为成功）
-        if let idx = recordIndex[msgId] {
-            records[idx].ok = ok
-            tableView.reloadRows(at: [IndexPath(row: idx, section: 0)], with: .none)
+    @objc private func sendFilesTapped() {
+        present(FilesViewController(), animated: true)
+    }
+
+    // MARK: - 结束存档
+    @objc private func finishTapped() {
+        guard let info = ScanStorage.currentInfo() else {
+            CenterToast.show("当前没有存储中的文件（先开启存储扫描并扫码）")
+            return
         }
+        let a = UIAlertController(title: "结束存档（可修改文件名）",
+                                  message: "共 \(info.1) 条，保存后可在「储存发送」中发送",
+                                  preferredStyle: .alert)
+        a.addTextField { [weak self] in
+            $0.text = info.0
+            self?.setupRenameField($0)
+        }
+        a.addAction(UIAlertAction(title: "保存", style: .default) { _ in
+            let name = a.textFields?.first?.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            self.saveFinishedFile(name)
+        })
+        a.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(a, animated: true)
+    }
+
+    private func setupRenameField(_ f: UITextField) {
+        // 预填的自动名需要全选便于直接覆盖输入
+        DispatchQueue.main.async {
+            f.selectedTextRange = f.textRange(from: f.beginningOfDocument, to: f.endOfDocument)
+        }
+    }
+
+    private func saveFinishedFile(_ name: String) {
+        switch true {
+        case name.isEmpty:
+            CenterToast.show("文件名不能为空，未存档")
+        case name.contains(where: { "\\/:*?\"<>|".contains($0) }):
+            CenterToast.show("文件名不能包含 / \\ : * ? \" < > | 字符，未存档")
+        // 重名校验须排除当前活动文件自身（活动文件已在磁盘上，不排除则预填的自动名永远"重名"）
+        case name != ScanStorage.currentInfo()?.0 && ScanStorage.nameExists(name):
+            CenterToast.show("已存在同名文件「\(name)」，请重新存档并换个名字")
+        default:
+            if let result = ScanStorage.finishCurrent(newName: name) {
+                CenterToast.show("已保存「\(result.0)」（\(result.1)条），可在「储存发送」中发送；下次扫码将存入新文件", duration: 3)
+            }
+        }
+        refreshFilesBtn()
+    }
+
+    // MARK: - 储存发送按钮角标（未发完文件数）
+    private func refreshFilesBtn() {
+        let n = ScanStorage.allFiles().filter { $0.sent < $0.total }.count
+        sendFilesBtn.setTitle(n > 0 ? "储存发送(\(n))" : "储存发送", for: .normal)
+    }
+
+    // MARK: - 扫码入口（取景框筛选后）
+    private func onScan(_ code: String, _ type: String) {
+        guard Prefs.shared.isPaired else {
+            CenterToast.show("请先完成配对（点击顶部横幅）")
+            Beep.fail()
+            return
+        }
+        if Prefs.shared.storageMode {
+            // 存储模式：只存不发，实时写入活动文件
+            let n = ScanStorage.append(code)
+            cntTotal += 1
+            cntStored += 1
+            HistoryStore.shared.addStored(code)
+            Beep.ok()
+            flash("已存储（本文件 \(n) 条）\n\(code)", state: .good)
+            renderStats()
+            return
+        }
+        let msgId = ConnectionManager.shared.sendScan(code, type: type)
+        HistoryStore.shared.addPending(msgId, code)
+        statsSend(msgId)
+        flash("已发送\n\(code)", state: .neutral)
+    }
+
+    // MARK: - ConnListener
+    func connStateChanged(_ state: ConnectionManager.State) { updateBanner() }
+    func connWelcome(machine: String) { updateBanner() }
+
+    func connAck(msgId: String, code: String, ok: Bool, reason: String) {
+        statsAck(msgId, ok: ok)
+        HistoryStore.shared.update(msgId, status: ok ? .ok : .fail, reason: reason)
         if ok {
             Beep.ok()
-            flash(text: "✓", symbol: true)
+            flash("√ 已录入\n\(code)", state: .good)
         } else {
             Beep.fail()
-            flash(text: "✗ \(reason)", symbol: false)
+            flash("× 未录入\n\(reason.isEmpty ? "客户机未确认" : reason)", state: .bad)
         }
-        refreshStats()
     }
 
-    // MARK: - 统计与历史
-    private func refreshStats() {
-        let total = records.count
-        let ok = records.filter { $0.ok == true }.count
-        let fail = records.filter { $0.ok == false }.count
-        let pending = records.filter { $0.ok == nil }.count
-        statsLabel.text = "本次：\(total) ｜ 成功 \(ok) ｜ 失败 \(fail) ｜ 待确认 \(pending)"
+    // MARK: - 状态横幅
+    private func updateBanner() {
+        let cm = ConnectionManager.shared
+        switch true {
+        case !Prefs.shared.isPaired:
+            setBanner("未配对，点击此处选择客户机", UIColor(hex: 0xC62828))
+        case cm.currentState == .connected:
+            setBanner("已连接：\(cm.pcName)（\(Prefs.shared.host)）", UIColor(hex: 0x2E7D32))
+        case cm.currentState == .connecting:
+            setBanner("连接中…", UIColor(hex: 0x8D6E00))
+        default:
+            setBanner("连接断开，自动重连中…（点击可重新配对）", UIColor(hex: 0xC62828))
+        }
     }
 
-    private func reindex() {
-        recordIndex.removeAll()
-        for (i, r) in records.enumerated() { recordIndex[r.msgId] = i }
+    private func setBanner(_ text: String, _ color: UIColor) {
+        banner.setTitle(text, for: .normal)
+        banner.backgroundColor = color
+    }
+
+    // MARK: - 闪烁反馈层
+    private func flash(_ text: String, state: Bool?) {
+        flashLabel.text = text
+        flashView.backgroundColor = {
+            switch state {
+            case .some(true): return UIColor(hex: 0x1B5E20, alpha: 0.8)
+            case .some(false): return UIColor(hex: 0xB71C1C, alpha: 0.8)
+            default: return UIColor(white: 0, alpha: 0.8)
+            }
+        }()
+        flashView.isHidden = false
+        flashView.layer.removeAllAnimations()
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(hideFlash), object: nil)
+        perform(#selector(hideFlash), with: nil, afterDelay: 1.4)
+    }
+
+    @objc private func hideFlash() { flashView.isHidden = true }
+
+    // MARK: - 统计
+    private func statsSend(_ msgId: String) {
+        statsState[msgId] = 0
+        cntTotal += 1
+        cntPending += 1
+        // 上限 300 条状态记录，避免无限增长
+        while statsState.count > 300 { statsState.removeValue(forKey: statsState.keys.first!) }
+        renderStats()
+    }
+
+    private func statsAck(_ msgId: String, ok: Bool) {
+        switch statsState[msgId] {
+        case 0:
+            cntPending -= 1
+            if ok { cntOk += 1 } else { cntFail += 1 }
+        case 2 where ok:
+            // 超时判定失败后迟到的成功回执：改为成功
+            cntFail -= 1
+            cntOk += 1
+        default:
+            return
+        }
+        statsState[msgId] = ok ? 1 : 2
+        renderStats()
     }
 
     @objc private func clearTapped() {
-        records.removeAll()
-        recordIndex.removeAll()
-        tableView.reloadData()
-        refreshStats()
+        cntTotal = 0; cntOk = 0; cntFail = 0; cntPending = 0; cntStored = 0
+        statsState.removeAll()
+        HistoryStore.shared.clear()
+        renderStats()
+        CenterToast.show("计数与历史已清零")
     }
 
-    @objc private func manualTapped() {
-        guard let v = manualField.text, !v.isEmpty else { return }
-        manualField.text = nil
-        manualField.resignFirstResponder()
-        sendCode(v, type: "手动输入")
-    }
-
-    // MARK: - 反馈闪烁
-    private func flash(text: String, symbol: Bool) {
-        flashLabel.text = text
-        flashLabel.textColor = symbol ? .systemGreen : .systemRed
-        flashView.isHidden = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            self?.flashView.isHidden = true
-        }
+    private func renderStats() {
+        statsLabel.text = Prefs.shared.storageMode
+            ? "本次：\(cntTotal) ｜ 已存储 \(cntStored)（存储模式：只存不发）"
+            : "本次：\(cntTotal) ｜ 成功 \(cntOk) ｜ 失败 \(cntFail) ｜ 待确认 \(cntPending)"
     }
 }
 
-// MARK: - 相机识别回调
+// MARK: - 相机识别回调（中央取景框筛选）
 extension ScanViewController: AVCaptureMetadataOutputObjectsDelegate {
     func metadataOutput(_ output: AVCaptureMetadataOutput,
                         didOutput metadataObjects: [AVMetadataObject],
                         from connection: AVCaptureConnection) {
-        guard let obj = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
-              let value = obj.stringValue else { return }
-
-        let auto = Prefs.shared.autoMode
-        if !auto && !armed { return }          // 手动模式：仅按钮按下后识别
-
-        // 自动模式同码冷却 2 秒
-        if auto {
-            if value == lastCode, Date().timeIntervalSince(lastCodeAt) < 2.0 { return }
-            lastCode = value
-            lastCodeAt = Date()
-        } else {
-            disarm(timeout: false)             // 手动模式识别到即结束本次
+        guard let layer = previewLayer else { return }
+        // 取景框判定：只认码中心落在取景框（每边略放大）内的码；多个码取最居中的
+        let fr = frameBox.frame
+        guard fr.width > 10, fr.height > 10 else { return }
+        let padX = fr.width * 0.05
+        let padY = fr.height * 0.08
+        var best: (value: String, type: String, dist: CGFloat)?
+        for obj in metadataObjects {
+            guard let m = obj as? AVMetadataMachineReadableCodeObject,
+                  let v = m.stringValue, !v.isEmpty,
+                  let t = layer.transformedMetadataObject(for: m) else { continue }
+            let cx = t.bounds.midX, cy = t.bounds.midY
+            if cx < fr.minX - padX || cx > fr.maxX + padX || cy < fr.minY - padY || cy > fr.maxY + padY { continue }
+            let dx = cx - fr.midX, dy = cy - fr.midY
+            let d = dx * dx + dy * dy
+            if best == nil || d < best!.dist {
+                best = (v, codeTypeName(m.type.rawValue), d)
+            }
         }
+        guard let hit = best else { return }
 
-        let type = codeTypeName(obj.type.rawValue)
-        sendCode(value, type: type)
+        if Prefs.shared.manualMode {
+            // 手动模式：仅在扫描会话进行中识别，识别到立即结束会话
+            guard scanSession else { return }
+            endSession()
+            onScan(hit.value, hit.type)
+        } else {
+            // 自动模式：连续识别，冷却去重防重复发送
+            let now = Date()
+            if now.timeIntervalSince(lastSendAt) < 0.7 { return }
+            if hit.value == lastCode, now.timeIntervalSince(lastCodeAt) < 2.0 { return }
+            lastCode = hit.value
+            lastCodeAt = now
+            lastSendAt = now
+            onScan(hit.value, hit.type)
+        }
     }
 
     private func codeTypeName(_ raw: String) -> String {
@@ -470,7 +664,7 @@ extension ScanViewController: AVCaptureMetadataOutputObjectsDelegate {
         case "org.gs1.UPC-A": return "UPC-A"
         case "org.gs1.UPC-E": return "UPC-E"
         case "org.iso.ITF": return "ITF"
-        case "com.intermec.Codabar": return "Codabar"
+        case "com.intermec.Codabar": return "CODABAR"
         case "org.iso.PDF417": return "PDF417"
         case "org.iso.Aztec": return "Aztec"
         case "org.iso.DataMatrix": return "DataMatrix"
@@ -479,28 +673,12 @@ extension ScanViewController: AVCaptureMetadataOutputObjectsDelegate {
     }
 }
 
-// MARK: - 历史列表
-extension ScanViewController: UITableViewDataSource, UITableViewDelegate {
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        records.count
-    }
-
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        // subtitle 样式（显示 码内容 + 状态两行）
-        let cell = tableView.dequeueReusableCell(withIdentifier: "cell")
-            ?? UITableViewCell(style: .subtitle, reuseIdentifier: "cell")
-        let r = records[indexPath.row]
-        let df = DateFormatter()
-        df.dateFormat = "HH:mm:ss"
-        let status = r.ok == nil ? "…待确认" : (r.ok! ? "✓成功" : "✗失败")
-        cell.textLabel?.text = "\(df.string(from: r.time))  \(r.code)"
-        cell.textLabel?.font = .systemFont(ofSize: 13)
-        cell.textLabel?.textColor = r.ok == false ? .systemRed : .white
-        cell.detailTextLabel?.text = "\(r.type) · \(status)"
-        cell.detailTextLabel?.font = .systemFont(ofSize: 11)
-        cell.detailTextLabel?.textColor = .lightGray
-        cell.backgroundColor = .clear
-        cell.selectionStyle = .none
-        return cell
+// MARK: - UIColor 便捷
+extension UIColor {
+    convenience init(hex: UInt32, alpha: CGFloat = 1) {
+        self.init(red: CGFloat((hex >> 16) & 0xFF) / 255.0,
+                  green: CGFloat((hex >> 8) & 0xFF) / 255.0,
+                  blue: CGFloat(hex & 0xFF) / 255.0,
+                  alpha: alpha)
     }
 }

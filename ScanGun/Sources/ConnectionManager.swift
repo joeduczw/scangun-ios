@@ -17,6 +17,18 @@ enum Beep {
     }
 }
 
+/// 连接事件监听（多个页面同时监听：主界面/储存发送页都要收 ACK）
+protocol ConnListener: AnyObject {
+    func connStateChanged(_ state: ConnectionManager.State)
+    func connWelcome(machine: String)
+    func connAck(msgId: String, code: String, ok: Bool, reason: String)
+}
+extension ConnListener {
+    func connStateChanged(_ state: ConnectionManager.State) {}
+    func connWelcome(machine: String) {}
+    func connAck(msgId: String, code: String, ok: Bool, reason: String) {}
+}
+
 /// WebSocket 连接管理（对齐安卓版：ACK确认/3秒超时/指数退避重连/断线outbox补发）
 final class ConnectionManager {
     static let shared = ConnectionManager()
@@ -34,14 +46,34 @@ final class ConnectionManager {
     private var keepAliveTimer: Timer?
     private let queue = DispatchQueue(label: "ws.conn")
 
-    /// UI 回调（主线程）
-    var onStateChanged: ((State) -> Void)?
-    var onWelcome: ((String) -> Void)?
-    /// ok=false 且 reason="超时" 时若为迟到回执会被再次以 ok=true 调用
-    var onAck: ((_ msgId: String, _ code: String, _ ok: Bool, _ reason: String) -> Void)?
+    /// 已连接的客户机名（WELCOME 消息带回，主线程读取）
+    private(set) var pcName = ""
+
+    /// 当前连接状态（线程安全读取）
+    var currentState: State {
+        queue.sync { state }
+    }
+
+    /// 弱引用监听者表（页面销毁自动移除，主线程增删）
+    private let listeners = NSHashTable<AnyObject>.weakObjects()
 
     private init() {
         session = URLSession(configuration: .default)
+    }
+
+    func addListener(_ l: ConnListener) {
+        DispatchQueue.main.async { self.listeners.add(l) }
+    }
+
+    func removeListener(_ l: ConnListener) {
+        DispatchQueue.main.async { self.listeners.remove(l) }
+    }
+
+    private func notify(_ body: (ConnListener) -> Void) {
+        // 调用方保证已在主线程
+        for l in listeners.allObjects {
+            if let l = l as? ConnListener { body(l) }
+        }
     }
 
     private var wsURL: URL? {
@@ -94,7 +126,9 @@ final class ConnectionManager {
 
     private func setState(_ s: State) {
         state = s
-        DispatchQueue.main.async { self.onStateChanged?(s) }
+        DispatchQueue.main.async {
+            self.notify { $0.connStateChanged(s) }
+        }
     }
 
     // MARK: - 收发
@@ -116,10 +150,12 @@ final class ConnectionManager {
         guard let cmd = parts.first else { return }   // 空消息防御（越界崩溃）
         if cmd == "WELCOME" {
             let machine = parts.count > 1 ? parts[1] : "客户机"
-            DispatchQueue.main.async { self.onWelcome?(machine) }
+            DispatchQueue.main.async {
+                self.pcName = machine
+                self.notify { $0.connWelcome(machine: machine) }
+            }
             queue.async {
-                // ⚠️ 核心修复：WELCOME 到达才算连接真正建立（原 bug：漏了这行，
-                // state 永远停在 .connecting，扫码全部进待发队列报"未连接客户机"）
+                // ⚠️ 核心：WELCOME 到达才算连接真正建立（state 停在 .connecting 会导致扫码全进待发队列）
                 self.setState(.connected)
                 self.reconnectAttempt = 0
                 self.flushOutbox()
@@ -130,16 +166,18 @@ final class ConnectionManager {
             let reason = parts.count > 3 ? parts[3] : ""
             queue.async {
                 if let p = self.pendingAcks.removeValue(forKey: msgId) {
-                    DispatchQueue.main.async { self.onAck?(msgId, p.code, ok, reason) }
+                    DispatchQueue.main.async {
+                        self.notify { $0.connAck(msgId: msgId, code: p.code, ok: ok, reason: reason) }
+                    }
                 }
             }
         }
     }
 
-    /// 发送扫码内容，返回 msgId
+    /// 发送扫码内容（实时模式）：断线时自动进待发队列，重连后补发。返回 msgId
     @discardableResult
     func sendScan(_ code: String, type: String) -> String {
-        let msgId = UUID().uuidString.prefix(8).lowercased()
+        let msgId = "a" + UUID().uuidString.prefix(8).lowercased()
         let payload = "SCAN|\(msgId)|\(type)|\(code)"
         queue.async { [weak self] in
             guard let self = self else { return }
@@ -149,11 +187,28 @@ final class ConnectionManager {
             } else {
                 self.outbox.append((code, type))   // 断线缓存，重连补发
                 DispatchQueue.main.async {
-                    self.onAck?(msgId, code, false, "未连接客户机（已进待发队列）")
+                    self.notify { $0.connAck(msgId: msgId, code: code, ok: false, reason: "未连接客户机（已进待发队列）") }
                 }
             }
         }
         return msgId
+    }
+
+    /// 直发模式（储存文件批量发送专用）：仅已连接时发送；
+    /// 断线/发送失败返回 nil，不进待发队列——由调用方按断点续发逻辑管理，
+    /// 避免重连自动补发与续发造成电脑重复录入。
+    @discardableResult
+    func sendScanDirect(_ code: String, type: String) -> String? {
+        let msgId = "f" + UUID().uuidString.prefix(8).lowercased()
+        var sent = false
+        queue.sync {
+            if state == .connected, task != nil {
+                sendRaw("SCAN|\(msgId)|\(type)|\(code)")
+                pendingAcks[msgId] = (code, Date())
+                sent = true
+            }
+        }
+        return sent ? msgId : nil
     }
 
     private func flushOutbox() {
@@ -204,7 +259,7 @@ final class ConnectionManager {
 
     private func checkAckTimeout() {
         let deadline = Date().addingTimeInterval(-3.0)
-        // timer 在主线程触发，回 queue 异步取数（原 queue.sync 若在 queue 上下文调用会死锁）
+        // timer 在主线程触发，回 queue 异步取数（queue.sync 若在 queue 上下文调用会死锁）
         queue.async { [weak self] in
             guard let self = self else { return }
             var timedOut: [(String, String)] = []
@@ -213,7 +268,9 @@ final class ConnectionManager {
                 timedOut.append((id, p.code))
             }
             for (id, code) in timedOut {
-                DispatchQueue.main.async { self.onAck?(id, code, false, "客户机3秒内未确认") }
+                DispatchQueue.main.async {
+                    self.notify { $0.connAck(msgId: id, code: code, ok: false, reason: "客户机3秒内未确认") }
+                }
             }
         }
     }
