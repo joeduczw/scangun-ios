@@ -2,17 +2,17 @@ import UIKit
 import AVFoundation
 
 /// 主界面（复刻安卓版）：
-/// - 状态横幅（未配对/连接中/已连接/断开，点击进配对）
-/// - 存储控制行：存储开关（开=存储扫描只存不发，关=实时扫描即扫即发，文字随状态）/ 结束存档 / 储存发送
+/// - 状态横幅（未配对/连接中/已连接/断开，只读展示；重新配对走底部「重新配对」按钮）
+/// - 存储控制行：存储/实时切换按钮（实时模式标红醒目）/ 撤销 / 结束存档 / 储存发送
 /// - 相机预览区：中央取景框（多码同屏只认框内码，位置偏上）+ 变焦手势 + 闪光灯 + 扫描按钮（手动模式）
 /// - 功能按钮行：模式 / 闪光灯 / 手动输入 / 重新配对
 /// - 统计栏：本次统计 + 清零 + 扫描历史
 class ScanViewController: UIViewController, ConnListener {
 
     // MARK: - UI
-    private let banner = UIButton(type: .system)
-    private let storageLabel = UILabel()
-    private let storageSwitch = UISwitch()
+    private let banner = UILabel()
+    private let storageBtn = UIButton(type: .system)
+    private let undoBtn = UIButton(type: .system)
     private let finishBtn = UIButton(type: .system)
     private let sendFilesBtn = UIButton(type: .system)
     private let previewView = UIView()
@@ -44,18 +44,20 @@ class ScanViewController: UIViewController, ConnListener {
     private var lastCode = ""
     private var lastCodeAt = Date.distantPast
     private var lastSendAt = Date.distantPast
+    private var lastScanSuccessAt = Date.distantPast   // 最近识别成功时刻（扫描按钮1秒防抖用）
 
     // MARK: - 本次统计（APP 启动后累计，可手动清零，重启自动归零）
     private var cntTotal = 0
     private var cntOk = 0
     private var cntFail = 0
     private var cntPending = 0
-    private var cntStored = 0
     private var statsState: [String: Int] = [:]   // msgId -> 0发送/1成功/2失败
 
     // MARK: - 生命周期
     override func viewDidLoad() {
         super.viewDidLoad()
+        // 每次打开 APP 默认存储扫描模式（不保留上次的选择）
+        Prefs.shared.storageMode = true
         view.backgroundColor = UIColor(hex: 0x0E0E0E)
         buildUI()
         setupCamera()
@@ -92,11 +94,13 @@ class ScanViewController: UIViewController, ConnListener {
     private func buildUI() {
         let safe = view.safeAreaLayoutGuide
 
-        // 状态横幅（点击进入配对）
-        banner.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
-        banner.setTitleColor(.white, for: .normal)
+        // 状态横幅（只读展示，重新配对走底部「重新配对」按钮）
+        banner.font = .systemFont(ofSize: 14, weight: .medium)
+        banner.textColor = .white
+        banner.textAlignment = .center
+        banner.adjustsFontSizeToFitWidth = true
+        banner.minimumScaleFactor = 0.8
         banner.translatesAutoresizingMaskIntoConstraints = false
-        banner.addTarget(self, action: #selector(bannerTapped), for: .touchUpInside)
         view.addSubview(banner)
         NSLayoutConstraint.activate([
             banner.topAnchor.constraint(equalTo: safe.topAnchor),
@@ -105,11 +109,11 @@ class ScanViewController: UIViewController, ConnListener {
             banner.heightAnchor.constraint(equalToConstant: 44)
         ])
 
-        // 存储控制行：开关 + 结束存档 + 储存发送
+        // 存储控制行：存储/实时（点击切换，实时标红）/ 撤销 / 结束存档 / 储存发送（四按钮平分宽度）
         let storageRow = UIStackView()
         storageRow.axis = .horizontal
-        storageRow.spacing = 10
-        storageRow.alignment = .center
+        storageRow.spacing = 8
+        storageRow.distribution = .fillEqually
         storageRow.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(storageRow)
         NSLayoutConstraint.activate([
@@ -119,31 +123,19 @@ class ScanViewController: UIViewController, ConnListener {
             storageRow.heightAnchor.constraint(equalToConstant: 52)
         ])
 
-        // 开关组：文字+开关紧贴（内嵌小 stack，避免整行拉伸导致开关离文字太远）
-        let switchGroup = UIStackView()
-        switchGroup.axis = .horizontal
-        switchGroup.spacing = 4
-        switchGroup.alignment = .center
-        storageLabel.font = .systemFont(ofSize: 14, weight: .medium)
-        storageLabel.textColor = .white
-        switchGroup.addArrangedSubview(storageLabel)
-        storageSwitch.onTintColor = UIColor(hex: 0x2E7D32)
-        storageSwitch.transform = CGAffineTransform(scaleX: 0.82, y: 0.82)
-        storageSwitch.addTarget(self, action: #selector(storageToggled), for: .valueChanged)
-        switchGroup.addArrangedSubview(storageSwitch)
-        switchGroup.setContentHuggingPriority(.required, for: .horizontal)
-        storageRow.addArrangedSubview(switchGroup)
-
-        // 复刻安卓 weight=1：两按钮平分剩余宽度（更大更醒目）
+        styleBtn(storageBtn, title: "")
+        storageBtn.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
+        storageBtn.addTarget(self, action: #selector(storageToggled), for: .touchUpInside)
+        storageRow.addArrangedSubview(storageBtn)
+        styleBtn(undoBtn, title: "撤销")
+        undoBtn.addTarget(self, action: #selector(undoTapped), for: .touchUpInside)
+        storageRow.addArrangedSubview(undoBtn)
         styleBtn(finishBtn, title: "结束存档")
-        finishBtn.setContentHuggingPriority(UILayoutPriority(249), for: .horizontal)
         finishBtn.addTarget(self, action: #selector(finishTapped), for: .touchUpInside)
         storageRow.addArrangedSubview(finishBtn)
         styleBtn(sendFilesBtn, title: "储存发送")
-        sendFilesBtn.setContentHuggingPriority(UILayoutPriority(249), for: .horizontal)
         sendFilesBtn.addTarget(self, action: #selector(sendFilesTapped), for: .touchUpInside)
         storageRow.addArrangedSubview(sendFilesBtn)
-        finishBtn.widthAnchor.constraint(equalTo: sendFilesBtn.widthAnchor).isActive = true
 
         // 相机预览区（占据剩余空间；底部约束在统计栏建立后激活——预览区在统计栏上方结束）
         previewView.translatesAutoresizingMaskIntoConstraints = false
@@ -271,7 +263,7 @@ class ScanViewController: UIViewController, ConnListener {
         doubleTap.numberOfTapsRequired = 2
         previewView.addGestureRecognizer(doubleTap)
 
-        applyStorageUI()
+        applyStorageBtn()
         applyMode()
     }
 
@@ -287,19 +279,39 @@ class ScanViewController: UIViewController, ConnListener {
     }
 
     // MARK: - 存储/模式 UI
-    private func applyStorageUI() {
+    /// 存储模式按钮状态：存储扫描=默认紫色；实时扫描=红色醒目（即扫即发防误发）
+    private func applyStorageBtn() {
         let on = Prefs.shared.storageMode
-        storageLabel.text = on ? "存储扫描" : "实时扫描"
-        storageSwitch.setOn(on, animated: false)
+        storageBtn.setTitle(on ? "存储扫描" : "实时扫描", for: .normal)
+        storageBtn.backgroundColor = on ? UIColor(hex: 0x6750A4) : UIColor(hex: 0xC62828)
     }
 
+    /// 点一次切换一次：存储扫描（只存不发）⇄ 实时扫描（即扫即发，按钮标红醒目）
     @objc private func storageToggled() {
-        let on = storageSwitch.isOn
-        Prefs.shared.storageMode = on
-        applyStorageUI()
+        Prefs.shared.storageMode.toggle()
+        applyStorageBtn()
         renderStats()
-        CenterToast.show(on ? "存储扫描已开启：扫码只存不发，在「储存发送」中统一发送"
-                            : "存储扫描已关闭：扫码恢复即扫即发")
+        CenterToast.show(Prefs.shared.storageMode ? "存储扫描已开启：扫码只存不发，在「储存发送」中统一发送"
+                                                  : "存储扫描已关闭：扫码恢复即扫即发")
+    }
+
+    /// 撤销：删除当前活动文件的最后一条存储记录（仅存储模式可用）。
+    /// 连点连撤；同时联动统计计数与扫描历史
+    @objc private func undoTapped() {
+        guard Prefs.shared.storageMode else {
+            CenterToast.show("实时模式不支持撤销（码已发送到电脑）")
+            return
+        }
+        guard let removed = ScanStorage.undoLast() else {
+            CenterToast.show("没有可撤销的数据")
+            return
+        }
+        HistoryStore.shared.undoLastStored()
+        if cntTotal > 0 { cntTotal -= 1 }
+        renderStats()
+        Beep.fail()   // 撤销提示音（低沉音，与存储成功的上扬音区分）
+        flash("已撤销\n\(removed)", style: .bad)
+        CenterToast.show("已撤销：\(removed)")
     }
 
     // MARK: - 相机
@@ -390,6 +402,8 @@ class ScanViewController: UIViewController, ConnListener {
 
     // MARK: - 扫描动作（手动会话：按一下扫一次；5 秒未识别自动结束）
     @objc private func scanTapped() {
+        // 防抖：识别成功后 1 秒内忽略点击（防止手快连点对同码开多余会话重复录入）
+        if Date().timeIntervalSince(lastScanSuccessAt) < 1.0 { return }
         guard cameraAuthorized else { return setupCamera() }
         if scanSession {
             endSession()
@@ -444,7 +458,6 @@ class ScanViewController: UIViewController, ConnListener {
         present(a, animated: true)
     }
 
-    @objc private func bannerTapped() { presentPairing() }
     @objc private func pairTapped() { presentPairing() }
 
     private func presentPairing() {
@@ -499,6 +512,10 @@ class ScanViewController: UIViewController, ConnListener {
             CenterToast.show("已存在同名文件「\(name)」，请重新存档并换个名字")
         default:
             if let result = ScanStorage.finishCurrent(newName: name) {
+                // 新批次开始：本次计数清零，已存储随活动文档封存自动归零（扫描历史保留）
+                cntTotal = 0; cntOk = 0; cntFail = 0; cntPending = 0
+                statsState.removeAll()
+                renderStats()
                 CenterToast.show("已保存「\(result.0)」（\(result.1)条），可在「储存发送」中发送；下次扫码将存入新文件", duration: 3)
             }
         }
@@ -513,8 +530,9 @@ class ScanViewController: UIViewController, ConnListener {
 
     // MARK: - 扫码入口（取景框筛选后）
     private func onScan(_ code: String, _ type: String) {
+        lastScanSuccessAt = Date()   // 扫描按钮防抖基准：识别成功时刻
         guard Prefs.shared.isPaired else {
-            CenterToast.show("请先完成配对（点击顶部横幅）")
+            CenterToast.show("请先完成配对（点底部「重新配对」）")
             Beep.fail()
             return
         }
@@ -522,7 +540,6 @@ class ScanViewController: UIViewController, ConnListener {
             // 存储模式：只存不发，实时写入活动文件
             let n = ScanStorage.append(code)
             cntTotal += 1
-            cntStored += 1
             HistoryStore.shared.addStored(code)
             Beep.ok()
             flash("已存储（本文件 \(n) 条）\n\(code)", style: .good)
@@ -556,18 +573,18 @@ class ScanViewController: UIViewController, ConnListener {
         let cm = ConnectionManager.shared
         switch true {
         case !Prefs.shared.isPaired:
-            setBanner("未配对，点击此处选择客户机", UIColor(hex: 0xC62828))
+            setBanner("未配对，点底部「重新配对」选择客户机", UIColor(hex: 0xC62828))
         case cm.currentState == .connected:
             setBanner("已连接：\(cm.pcName)（\(Prefs.shared.host)）", UIColor(hex: 0x2E7D32))
         case cm.currentState == .connecting:
-            setBanner("连接中…", UIColor(hex: 0x8D6E00))
+            setBanner("连接中…", UIColor(hex: 0xF9A825))
         default:
-            setBanner("连接断开，自动重连中…（点击可重新配对）", UIColor(hex: 0xC62828))
+            setBanner("连接断开，自动重连中…", UIColor(hex: 0xC62828))
         }
     }
 
     private func setBanner(_ text: String, _ color: UIColor) {
-        banner.setTitle(text, for: .normal)
+        banner.text = text
         banner.backgroundColor = color
     }
 
@@ -617,18 +634,49 @@ class ScanViewController: UIViewController, ConnListener {
         renderStats()
     }
 
+    /// 清零：只清"本次"计数与扫描历史；「已存储」跟随当前活动文档（结束存档才归零）
     @objc private func clearTapped() {
-        cntTotal = 0; cntOk = 0; cntFail = 0; cntPending = 0; cntStored = 0
+        cntTotal = 0; cntOk = 0; cntFail = 0; cntPending = 0
         statsState.removeAll()
         HistoryStore.shared.clear()
         renderStats()
-        CenterToast.show("计数与历史已清零")
+        CenterToast.show("本次计数与历史已清零（已存储保持）")
     }
 
+    /// 统计栏：本次数字绿色加粗、已存储数字红色加粗（只着色数字，标签保持白色）
     private func renderStats() {
-        statsLabel.text = Prefs.shared.storageMode
-            ? "本次：\(cntTotal) ｜ 已存储 \(cntStored)（存储模式：只存不发）"
-            : "本次：\(cntTotal) ｜ 成功 \(cntOk) ｜ 失败 \(cntFail) ｜ 待确认 \(cntPending)"
+        let ssb = NSMutableAttributedString()
+        appendStat(ssb, label: "本次：", num: cntTotal, color: UIColor(hex: 0x66BB6A))
+        if Prefs.shared.storageMode {
+            ssb.append(plainStat(" ｜ "))
+            appendStat(ssb, label: "已存储 ", num: storedCount(), color: UIColor(hex: 0xEF5350))
+            ssb.append(plainStat("（存储模式：只存不发）"))
+        } else {
+            ssb.append(plainStat(" ｜ 成功 \(cntOk) ｜ 失败 \(cntFail) ｜ 待确认 \(cntPending)"))
+        }
+        statsLabel.attributedText = ssb
+    }
+
+    /// 追加"白色标签 + 彩色加粗数字"统计段
+    private func appendStat(_ ssb: NSMutableAttributedString, label: String, num: Int, color: UIColor) {
+        ssb.append(plainStat(label))
+        ssb.append(NSAttributedString(string: String(num), attributes: [
+            .font: UIFont.boldSystemFont(ofSize: 13),
+            .foregroundColor: color
+        ]))
+    }
+
+    private func plainStat(_ s: String) -> NSAttributedString {
+        NSAttributedString(string: s, attributes: [
+            .font: UIFont.systemFont(ofSize: 12),
+            .foregroundColor: UIColor.white
+        ])
+    }
+
+    /// 已存储 = 当前活动文档累计条数（存储/撤销自动增减，清零按钮不影响，
+    ///  结束存档或重启 APP 开新文档后自动归零）
+    private func storedCount() -> Int {
+        ScanStorage.currentInfo()?.1 ?? 0
     }
 }
 

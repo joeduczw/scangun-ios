@@ -49,6 +49,15 @@ final class HistoryStore {
         lock.unlock()
     }
 
+    /// 撤销最近一条"已存储"历史记录（主界面撤销按钮联动，删最新一条已存储）；返回被删记录
+    @discardableResult
+    func undoLastStored() -> Item? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let idx = items.firstIndex(where: { $0.status == .stored }) else { return nil }
+        return items.remove(at: idx)
+    }
+
     /// 更新指定消息的状态；返回是否更新成功
     @discardableResult
     func update(_ msgId: String, status: Status, reason: String = "") -> Bool {

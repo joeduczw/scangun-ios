@@ -13,6 +13,7 @@ enum ScanStorage {
         let url: URL
         let total: Int          // 总条数
         let sent: Int           // 已发送条数
+        var savedAt: Date = .distantPast   // 保存时间（文件最后修改时间=最后扫码时刻，改名不影响）
     }
 
     private static let keyCurrent = "current_scan_file"
@@ -63,6 +64,20 @@ enum ScanStorage {
         return countLines(url)
     }
 
+    /// 撤销当前活动文件的最后一条（存储模式扫错码时用）。
+    /// 返回被撤销的内容；无活动文件或文件已空返回 nil
+    static func undoLast() -> String? {
+        guard let name = UserDefaults.standard.string(forKey: keyCurrent) else { return nil }
+        let url = dir.appendingPathComponent(name)
+        guard fm.fileExists(atPath: url.path),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        var lines = text.components(separatedBy: "\n").filter { !$0.isEmpty }
+        guard let removed = lines.popLast() else { return nil }
+        let newText = lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
+        try? newText.write(to: url, atomically: true, encoding: .utf8)
+        return removed
+    }
+
     /// 结束并封存当前活动文件（可在封存时改名）。返回（显示名, 条数）；无活动文件返回 nil。
     /// 改名目标重名时不改名、按原名封存（调用方已做重名校验，此处兜底）
     static func finishCurrent(newName: String?) -> (String, Int)? {
@@ -107,8 +122,9 @@ enum ScanStorage {
             .sorted { $0 < $1 }
             .map { n in
                 let url = dir.appendingPathComponent(n)
+                let savedAt = ((try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date) ?? .distantPast
                 return StoredFile(name: displayName(n), url: url,
-                                  total: countLines(url), sent: readProgress(n))
+                                  total: countLines(url), sent: readProgress(n), savedAt: savedAt)
             }
     }
 

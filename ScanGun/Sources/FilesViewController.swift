@@ -7,7 +7,8 @@ import UIKit
 ///   间隔可调防丢码），面板内可随时「暂停/恢复」；断线自动暂停并保存进度
 /// - 手动任务进行中点「自动发送」= 从当前断点接管切换为自动
 /// - 勾选已发送的文件=整文件从头重发（进度清零）；文件发送后保留，可重发或手动删除
-/// - 「重新发送」：随时停止任务，文件恢复到进入任务前的状态
+/// - 「重新发送」双模式：任务中=停止任务并恢复未发送（本轮前已发完的保持不变）；
+///   无任务=勾选文件恢复到未发送状态（进度清零，重发将从头开始）
 class FilesViewController: UIViewController, ConnListener {
 
     private enum Mode { case none, manual, auto }
@@ -52,6 +53,13 @@ class FilesViewController: UIViewController, ConnListener {
 
     private let intervalValues = [300, 500, 800, 1200, 2000, 3000]
     private let intervalLabels = ["0.3秒（快）", "0.5秒（标准）", "0.8秒（慢）", "1.2秒（很慢）", "2秒（特慢）", "3秒（超慢）"]
+
+    /// 保存时间显示格式（文件最后修改时间=最后扫码时刻）
+    private let timeFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f
+    }()
 
     // MARK: - 生命周期
     override func viewDidLoad() {
@@ -321,8 +329,13 @@ class FilesViewController: UIViewController, ConnListener {
 
     // MARK: - 列表
     private func reload() {
-        // 全部文件；未发完的排前面，已发送的排后面
-        files = ScanStorage.allFiles().sorted { ($0.sent >= $0.total ? 1 : 0) < ($1.sent >= $1.total ? 1 : 0) }
+        // 排序：未发完的（含续发）排前面，已发完的排后面；组内按保存时间倒序（最新保存的最上）
+        // 保存时间取文件最后修改时间（=最后一条扫码时刻，改名不影响）
+        files = ScanStorage.allFiles().sorted { a, b in
+            let da = a.sent >= a.total ? 1 : 0
+            let db = b.sent >= b.total ? 1 : 0
+            return da != db ? da < db : a.savedAt > b.savedAt
+        }
         checked = checked.filter { name in files.contains { $0.name == name } }
         updateSelectAllBtn()
         tableView.reloadData()
@@ -416,7 +429,7 @@ class FilesViewController: UIViewController, ConnListener {
         sendQueue = sel.map { f in
             if f.sent >= f.total {
                 ScanStorage.saveProgress(f.url, sent: 0)
-                return ScanStorage.StoredFile(name: f.name, url: f.url, total: f.total, sent: 0)
+                return ScanStorage.StoredFile(name: f.name, url: f.url, total: f.total, sent: 0, savedAt: f.savedAt)
             }
             return f
         }
@@ -569,21 +582,50 @@ class FilesViewController: UIViewController, ConnListener {
         }
     }
 
-    // MARK: - 重新发送：随时停止任务，文件恢复到进入任务前的状态
+    // MARK: - 重新发送：
+    /// ① 任务进行中/暂停中（手动/自动均可）：确认后停止任务，文件恢复到未发送状态
+    ///   （未发送/续发中的一律清零从头；本轮前已发完的保持已发送不变）
+    /// ② 无任务时：确认后把勾选的文件恢复到未发送状态（进度清零，续发/已发完的均恢复）
     @objc private func resetTapped() {
         if mode == .none && !sending {
-            CenterToast.show("当前无发送任务")
+            let sel = selectedFiles
+            if sel.isEmpty {
+                CenterToast.show("请先勾选要恢复的文件")
+                return
+            }
+            let a = UIAlertController(title: "恢复到未发送状态",
+                                      message: "将勾选的 \(sel.count) 个文件恢复到未发送状态（进度清零，重发将从头开始），确定？",
+                                      preferredStyle: .alert)
+            a.addAction(UIAlertAction(title: "恢复", style: .destructive) { _ in
+                sel.forEach { ScanStorage.saveProgress($0.url, sent: 0) }
+                self.reload()
+                CenterToast.show("勾选的文件已恢复到未发送状态")
+            })
+            a.addAction(UIAlertAction(title: "取消", style: .cancel))
+            present(a, animated: true)
             return
         }
+        let a = UIAlertController(title: "停止发送任务",
+                                  message: "停止当前发送任务并将文件恢复到未发送状态（已发完的保持不变），确定？",
+                                  preferredStyle: .alert)
+        a.addAction(UIAlertAction(title: "停止", style: .destructive) { _ in self.doResetTask() })
+        a.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(a, animated: true)
+    }
+
+    /// 执行任务停止与进度恢复（resetTapped 确认后调用）
+    private func doResetTask() {
         sending = false
         mode = .none
         paused = false
         pauseReason = nil
         pendingMsgId = nil
         cancelTimers()
-        // 各文件恢复到任务开始前的进度（在途确认按丢弃处理）
+        // 各文件恢复：本轮前已发完的保持已发送，其余（未发送/续发中）清零回到未发送（在途确认按丢弃处理）
         for i in 0..<sendQueue.count where i < originalProgress.count {
-            ScanStorage.saveProgress(sendQueue[i].url, sent: originalProgress[i])
+            let f = sendQueue[i]
+            let orig = originalProgress[i]
+            ScanStorage.saveProgress(f.url, sent: orig >= f.total ? orig : 0)
         }
         originalProgress = []
         exitSendPanel()
@@ -591,7 +633,7 @@ class FilesViewController: UIViewController, ConnListener {
         sendingBar.isHidden = true
         updateManualBtn()
         reload()
-        CenterToast.show("任务已停止，文件已恢复到发送前状态，可重新选择发送", duration: 2.6)
+        CenterToast.show("任务已停止，文件已恢复到未发送状态（已发完的保持不变），可重新选择发送", duration: 2.6)
     }
 
     // MARK: - 暂停/恢复
@@ -699,26 +741,38 @@ extension FilesViewController: UITableViewDataSource, UITableViewDelegate {
         } else {
             status = "共 \(f.total) 条"; color = UIColor(hex: 0xE0E0E0)
         }
-        cell.textLabel?.text = f.name
+        // 文件名后显示保存时间（文件最后修改时间=最后扫码时刻）
+        cell.textLabel?.text = "\(f.name)（\(timeFmt.string(from: f.savedAt))）"
         cell.textLabel?.textColor = .white
         cell.textLabel?.font = .systemFont(ofSize: 14, weight: .medium)
         cell.detailTextLabel?.text = status
         cell.detailTextLabel?.textColor = color
         cell.detailTextLabel?.font = .systemFont(ofSize: 12)
-        // 勾选开关
-        let sw = UISwitch()
-        sw.tag = indexPath.row
-        sw.onTintColor = UIColor(hex: 0x2E7D32)
-        sw.transform = CGAffineTransform(scaleX: 0.8, y: 0.8)
-        sw.isOn = checked.contains(f.name)
-        sw.addTarget(self, action: #selector(rowSwitchChanged(_:)), for: .valueChanged)
-        cell.accessoryView = sw
+        // 勾选框：白框白钩（深色背景更醒目，对齐安卓）
+        let cb = UIButton(type: .system)
+        cb.tag = indexPath.row
+        cb.frame = CGRect(x: 0, y: 0, width: 28, height: 28)
+        cb.layer.borderWidth = 2
+        cb.layer.borderColor = UIColor.white.cgColor
+        cb.layer.cornerRadius = 5
+        cb.tintColor = .white
+        cb.setTitleColor(.white, for: .normal)
+        cb.titleLabel?.font = .boldSystemFont(ofSize: 16)
+        cb.setTitle(checked.contains(f.name) ? "✓" : "", for: .normal)
+        cb.addTarget(self, action: #selector(rowCheckTapped(_:)), for: .touchUpInside)
+        cell.accessoryView = cb
         return cell
     }
 
-    @objc private func rowSwitchChanged(_ sw: UISwitch) {
-        let f = files[sw.tag]
-        if sw.isOn { checked.insert(f.name) } else { checked.remove(f.name) }
+    @objc private func rowCheckTapped(_ cb: UIButton) {
+        let f = files[cb.tag]
+        if checked.contains(f.name) {
+            checked.remove(f.name)
+            cb.setTitle("", for: .normal)
+        } else {
+            checked.insert(f.name)
+            cb.setTitle("✓", for: .normal)
+        }
         updateSelectAllBtn()
     }
 }
