@@ -73,6 +73,19 @@ class ScanViewController: UIViewController, ConnListener {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         previewLayer?.frame = previewView.bounds
+        // 取景框手动布局（宽66%、高26%、中心在预览区32%高度处，偏上且完整可见）
+        let b = previewView.bounds
+        if b.width > 10, b.height > 10 {
+            let fw = b.width * 0.66
+            let fh = b.height * 0.26
+            frameBox.frame = CGRect(x: (b.width - fw) / 2, y: b.height * 0.19,
+                                    width: fw, height: fh)
+            frameTip.sizeToFit()
+            frameTip.frame = CGRect(x: (b.width - frameTip.bounds.width) / 2,
+                                    y: b.height * 0.19 + fh + 12,
+                                    width: frameTip.bounds.width,
+                                    height: frameTip.bounds.height)
+        }
     }
 
     // MARK: - UI 构建
@@ -122,7 +135,7 @@ class ScanViewController: UIViewController, ConnListener {
         storageRow.addArrangedSubview(sendFilesBtn)
         finishBtn.widthAnchor.constraint(equalTo: sendFilesBtn.widthAnchor).isActive = true
 
-        // 相机预览区（占据剩余空间）
+        // 相机预览区（占据剩余空间；底部约束在统计栏建立后激活——预览区在统计栏上方结束）
         previewView.translatesAutoresizingMaskIntoConstraints = false
         previewView.backgroundColor = .black
         previewView.clipsToBounds = true
@@ -130,34 +143,20 @@ class ScanViewController: UIViewController, ConnListener {
         NSLayoutConstraint.activate([
             previewView.topAnchor.constraint(equalTo: storageRow.bottomAnchor),
             previewView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            previewView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            previewView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            previewView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
 
-        // 中央取景框：宽66%、高26%、中心在预览区32%高度处（偏上且完整可见）
+        // 中央取景框 + 下沿提示：宽66%、高26%、中心在预览区32%高度处（偏上且完整可见）。
+        // ⚠️ 手动布局（viewDidLayoutSubviews 设 frame，对齐安卓端做法）：
+        // .top 对 .height 的比例约束在 iOS 26 上抛 NSInvalidArgumentException 直接闪退（本次崩溃原因）
         frameBox.layer.borderColor = UIColor(white: 1, alpha: 0.85).cgColor
         frameBox.layer.borderWidth = 2
         frameBox.layer.cornerRadius = 14
-        frameBox.translatesAutoresizingMaskIntoConstraints = false
         previewView.addSubview(frameBox)
-        frameBox.widthAnchor.constraint(equalTo: previewView.widthAnchor, multiplier: 0.66).isActive = true
-        frameBox.heightAnchor.constraint(equalTo: previewView.heightAnchor, multiplier: 0.26).isActive = true
-        frameBox.centerXAnchor.constraint(equalTo: previewView.centerXAnchor).isActive = true
-        // top = 预览区高度 × 0.19（=中心在32%处）：.top 对 .height 的比例约束
-        NSLayoutConstraint(item: frameBox, attribute: .top, relatedBy: .equal,
-                           toItem: previewView, attribute: .height,
-                           multiplier: 0.19, constant: 0).isActive = true
-
-        // 取景框下沿提示
         frameTip.text = "将条码对准框内"
         frameTip.font = .systemFont(ofSize: 12)
         frameTip.textColor = UIColor(white: 1, alpha: 0.8)
-        frameTip.translatesAutoresizingMaskIntoConstraints = false
         previewView.addSubview(frameTip)
-        NSLayoutConstraint.activate([
-            frameTip.topAnchor.constraint(equalTo: frameBox.bottomAnchor, constant: 12),
-            frameTip.centerXAnchor.constraint(equalTo: previewView.centerXAnchor)
-        ])
 
         // 扫码结果闪烁反馈层（预览区居中）
         flashView.backgroundColor = UIColor(white: 0, alpha: 0.8)
@@ -245,6 +244,9 @@ class ScanViewController: UIViewController, ConnListener {
         styleBtn(historyBtn, title: "扫描历史")
         historyBtn.addTarget(self, action: #selector(historyTapped), for: .touchUpInside)
         statsRow.addArrangedSubview(historyBtn)
+
+        // 预览区底部约束（此时统计栏已在层级中）：预览区在统计栏上方结束，不与按钮行重叠
+        previewView.bottomAnchor.constraint(equalTo: statsRow.topAnchor).isActive = true
 
         // 变焦手势：双击 1x↔2.5x；双指捏合自由缩放（识别小/远二维码用）
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinchZoom(_:)))
