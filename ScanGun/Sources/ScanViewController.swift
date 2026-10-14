@@ -136,11 +136,11 @@ class ScanViewController: UIViewController, ConnListener {
 
         // 复刻安卓 weight=1：两按钮平分剩余宽度（更大更醒目）
         styleBtn(finishBtn, title: "结束存档")
-        finishBtn.setContentHuggingPriority(249, for: .horizontal)
+        finishBtn.setContentHuggingPriority(UILayoutPriority(249), for: .horizontal)
         finishBtn.addTarget(self, action: #selector(finishTapped), for: .touchUpInside)
         storageRow.addArrangedSubview(finishBtn)
         styleBtn(sendFilesBtn, title: "储存发送")
-        sendFilesBtn.setContentHuggingPriority(249, for: .horizontal)
+        sendFilesBtn.setContentHuggingPriority(UILayoutPriority(249), for: .horizontal)
         sendFilesBtn.addTarget(self, action: #selector(sendFilesTapped), for: .touchUpInside)
         storageRow.addArrangedSubview(sendFilesBtn)
         finishBtn.widthAnchor.constraint(equalTo: sendFilesBtn.widthAnchor).isActive = true
