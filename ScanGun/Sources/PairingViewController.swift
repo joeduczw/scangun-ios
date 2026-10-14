@@ -1,35 +1,81 @@
 import UIKit
 
-/// 配对页：输入客户机 IP / 端口 / 配对码
+/// 配对页：UDP 自动扫描客户机（点击设备自动填入 IP/端口）+ 手动输入 + 保存
 class PairingViewController: UIViewController {
+
     private let hostField = UITextField()
     private let portField = UITextField()
     private let tokenField = UITextField()
-    private var stack: UIStackView!
+    private let stack = UIStackView()
+
+    // 自动扫描区
+    private let scanState = UILabel()
+    private let deviceStack = UIStackView()
+    private var devices: [DiscoveryClient.Device] = []
+    private var scanToken = 0
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = UIColor(white: 0.96, alpha: 1)
 
-        stack = UIStackView()
-        stack.axis = .vertical
-        stack.spacing = 14
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
+        // 整页可滚动（发现列表 + 输入区在小屏上可能超出一屏）
+        let scroll = UIScrollView()
+        scroll.alwaysBounceVertical = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(scroll)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
-            stack.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+            scroll.topAnchor.constraint(equalTo: view.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
+        let stack = self.stack
+        stack.axis = .vertical
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 24),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -24),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -24),
+            stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -48)
+        ])
+
+        // ---- 自动扫描区 ----
+        let scanTitle = UILabel()
+        scanTitle.text = "自动扫描客户机"
+        scanTitle.font = .boldSystemFont(ofSize: 17)
+        scanTitle.textAlignment = .center
+        stack.addArrangedSubview(scanTitle)
+
+        scanState.text = "正在扫描局域网…"
+        scanState.font = .systemFont(ofSize: 13)
+        scanState.textColor = .gray
+        scanState.textAlignment = .center
+        scanState.numberOfLines = 0
+        stack.addArrangedSubview(scanState)
+
+        deviceStack.axis = .vertical
+        deviceStack.spacing = 8
+        stack.addArrangedSubview(deviceStack)
+
+        let rescanBtn = UIButton(type: .system)
+        rescanBtn.setTitle("重新扫描", for: .normal)
+        rescanBtn.setTitleColor(UIColor(red: 0.18, green: 0.44, blue: 0.82, alpha: 1), for: .normal)
+        rescanBtn.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
+        rescanBtn.addTarget(self, action: #selector(rescanTapped), for: .touchUpInside)
+        stack.addArrangedSubview(rescanBtn)
+
+        // ---- 手动输入区 ----
         let title = UILabel()
         title.text = "客户机信息（在客户机主界面查看）"
         title.font = .boldSystemFont(ofSize: 17)
         title.textAlignment = .center
         stack.addArrangedSubview(title)
 
-        addField(hostField, placeholder: "客户机 IP（如 192.168.1.100）",
-                 keyboard: .numbersAndPunctuation)
+        addField(hostField, placeholder: "客户机 IP（如 192.168.1.100）", keyboard: .numbersAndPunctuation)
         addField(portField, placeholder: "端口（默认 8899）", keyboard: .numberPad)
         addField(tokenField, placeholder: "6位配对码（客户机主界面显示）", keyboard: .numberPad)
 
@@ -52,9 +98,67 @@ class PairingViewController: UIViewController {
         tip.numberOfLines = 0
         tip.font = .systemFont(ofSize: 13)
         tip.textColor = .darkGray
-        tip.text = "说明：IP 和配对码在客户机程序主界面顶部；手机与客户机需在同一 WiFi。"
+        tip.textAlignment = .center
+        tip.text = "说明：手机与客户机需在同一 WiFi；\n客户机显示名称可在其「修改名称」中设置。"
         stack.addArrangedSubview(tip)
+
+        startScan()
     }
+
+    // MARK: - UDP 自动发现
+
+    private func startScan() {
+        scanToken += 1
+        let token = scanToken
+        scanState.text = "正在扫描局域网…"
+        scanState.textColor = .gray
+        deviceStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        DiscoveryClient.discover { [weak self] list in
+            guard let self = self, token == self.scanToken else { return }
+            self.renderDevices(list)
+        }
+    }
+
+    private func renderDevices(_ list: [DiscoveryClient.Device]) {
+        devices = list
+        deviceStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        if list.isEmpty {
+            scanState.text = "未扫描到接收端，请手动输入下方信息\n（确认电脑端扫码接收器已运行）"
+            scanState.textColor = .darkGray
+            return
+        }
+        scanState.text = "点击设备自动填入 IP 和端口："
+        scanState.textColor = UIColor(red: 0.13, green: 0.45, blue: 0.18, alpha: 1)
+        for (i, dev) in list.enumerated() {
+            let b = UIButton(type: .system)
+            b.tag = i
+            b.setTitle("\(dev.name)（\(dev.ip):\(dev.port)）", for: .normal)
+            b.setTitleColor(.black, for: .normal)
+            b.titleLabel?.font = .systemFont(ofSize: 15, weight: .medium)
+            b.contentHorizontalAlignment = .left
+            b.backgroundColor = .white
+            b.layer.cornerRadius = 8
+            b.layer.borderWidth = 1
+            b.layer.borderColor = UIColor(white: 0.85, alpha: 1).cgColor
+            b.contentEdgeInsets = UIEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
+            b.heightAnchor.constraint(equalToConstant: 48).isActive = true
+            b.addTarget(self, action: #selector(deviceTapped(_:)), for: .touchUpInside)
+            deviceStack.addArrangedSubview(b)
+        }
+    }
+
+    @objc private func deviceTapped(_ sender: UIButton) {
+        guard devices.indices.contains(sender.tag) else { return }
+        let dev = devices[sender.tag]
+        hostField.text = dev.ip
+        portField.text = String(dev.port)
+        CenterToast.show("已填入「\(dev.name)」，请输入配对码")
+        tokenField.becomeFirstResponder()
+    }
+
+    @objc private func rescanTapped() { startScan() }
+
+    // MARK: - 手动输入
 
     private func addField(_ f: UITextField, placeholder: String, keyboard: UIKeyboardType) {
         f.placeholder = placeholder
@@ -64,29 +168,27 @@ class PairingViewController: UIViewController {
         f.autocapitalizationType = .none
         f.font = .systemFont(ofSize: 16)
         f.heightAnchor.constraint(equalToConstant: 46).isActive = true
-        stack.addArrangedSubview(f)
+        stack?.addArrangedSubview(f)
     }
 
     @objc private func saveTapped() {
-        let host = hostField.text?.trimmingCharacters(in: .whitespaces) ?? ""
-        let token = tokenField.text?.trimmingCharacters(in: .whitespaces) ?? ""
-        var port = Int(portField.text?.trimmingCharacters(in: .whitespaces) ?? "") ?? 8899
-        if port <= 0 || port > 65535 { port = 8899 }
+        let host = (hostField.text ?? "").trimmingCharacters(in: .whitespaces)
+        let token = (tokenField.text ?? "").trimmingCharacters(in: .whitespaces)
+        let portText = (portField.text ?? "").trimmingCharacters(in: .whitespaces)
+        let port = Int(portText) ?? 8899
 
-        guard !host.isEmpty else { return alert("请输入客户机 IP") }
-        guard !token.isEmpty else { return alert("请输入配对码") }
+        if host.isEmpty { CenterToast.show("请输入客户机 IP"); return }
+        if token.count != 6 { CenterToast.show("配对码为 6 位数字"); return }
 
         Prefs.shared.host = host
         Prefs.shared.port = port
         Prefs.shared.token = token
 
-        ConnectionManager.shared.reconnectWithNewPrefs()
-        view.window?.rootViewController = ScanViewController()
-    }
+        CenterToast.show("已保存，正在连接…")
 
-    private func alert(_ msg: String) {
-        let a = UIAlertController(title: msg, message: nil, preferredStyle: .alert)
-        a.addAction(UIAlertAction(title: "好", style: .default))
-        present(a, animated: true)
+        // 通知主界面切换为扫描页（与旧逻辑一致）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.view.window?.rootViewController = ScanViewController()
+        }
     }
 }
