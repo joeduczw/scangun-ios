@@ -168,7 +168,7 @@ class PairingViewController: UIViewController {
         f.autocapitalizationType = .none
         f.font = .systemFont(ofSize: 16)
         f.heightAnchor.constraint(equalToConstant: 46).isActive = true
-        stack?.addArrangedSubview(f)
+        stack.addArrangedSubview(f)
     }
 
     @objc private func saveTapped() {
