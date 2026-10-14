@@ -66,10 +66,10 @@ class FilesViewController: UIViewController, ConnListener {
     private func buildUI() {
         let safe = view.safeAreaLayoutGuide
 
-        // 标题行：储存发送 | 重新发送 | 关闭
+        // 标题行：储存发送 | 重新发送 | 关闭（两按钮加大、拉开间距防误触）
         let titleRow = UIStackView()
         titleRow.axis = .horizontal
-        titleRow.spacing = 8
+        titleRow.spacing = 14
         titleRow.alignment = .center
         titleRow.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(titleRow)
@@ -77,7 +77,7 @@ class FilesViewController: UIViewController, ConnListener {
             titleRow.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
             titleRow.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
             titleRow.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
-            titleRow.heightAnchor.constraint(equalToConstant: 40)
+            titleRow.heightAnchor.constraint(equalToConstant: 48)
         ])
         titleLabel.text = "储存发送"
         titleLabel.font = .boldSystemFont(ofSize: 17)
@@ -86,9 +86,13 @@ class FilesViewController: UIViewController, ConnListener {
         let spacer = UIView()
         titleRow.addArrangedSubview(spacer)
         styleBtn(resetBtn, title: "重新发送")
+        resetBtn.titleLabel?.font = .boldSystemFont(ofSize: 14)
+        resetBtn.contentEdgeInsets = UIEdgeInsets(top: 10, left: 16, bottom: 10, right: 16)
         resetBtn.addTarget(self, action: #selector(resetTapped), for: .touchUpInside)
         titleRow.addArrangedSubview(resetBtn)
         styleBtn(closeBtn, title: "关闭")
+        closeBtn.titleLabel?.font = .boldSystemFont(ofSize: 14)
+        closeBtn.contentEdgeInsets = UIEdgeInsets(top: 10, left: 18, bottom: 10, right: 18)
         closeBtn.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
         titleRow.addArrangedSubview(closeBtn)
 
