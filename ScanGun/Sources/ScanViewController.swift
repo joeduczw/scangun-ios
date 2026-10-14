@@ -119,18 +119,28 @@ class ScanViewController: UIViewController, ConnListener {
             storageRow.heightAnchor.constraint(equalToConstant: 52)
         ])
 
+        // 开关组：文字+开关紧贴（内嵌小 stack，避免整行拉伸导致开关离文字太远）
+        let switchGroup = UIStackView()
+        switchGroup.axis = .horizontal
+        switchGroup.spacing = 4
+        switchGroup.alignment = .center
         storageLabel.font = .systemFont(ofSize: 14, weight: .medium)
         storageLabel.textColor = .white
-        storageRow.addArrangedSubview(storageLabel)
+        switchGroup.addArrangedSubview(storageLabel)
         storageSwitch.onTintColor = UIColor(hex: 0x2E7D32)
         storageSwitch.transform = CGAffineTransform(scaleX: 0.82, y: 0.82)
         storageSwitch.addTarget(self, action: #selector(storageToggled), for: .valueChanged)
-        storageRow.addArrangedSubview(storageSwitch)
+        switchGroup.addArrangedSubview(storageSwitch)
+        switchGroup.setContentHuggingPriority(.required, for: .horizontal)
+        storageRow.addArrangedSubview(switchGroup)
 
+        // 复刻安卓 weight=1：两按钮平分剩余宽度（更大更醒目）
         styleBtn(finishBtn, title: "结束存档")
+        finishBtn.setContentHuggingPriority(249, for: .horizontal)
         finishBtn.addTarget(self, action: #selector(finishTapped), for: .touchUpInside)
         storageRow.addArrangedSubview(finishBtn)
         styleBtn(sendFilesBtn, title: "储存发送")
+        sendFilesBtn.setContentHuggingPriority(249, for: .horizontal)
         sendFilesBtn.addTarget(self, action: #selector(sendFilesTapped), for: .touchUpInside)
         storageRow.addArrangedSubview(sendFilesBtn)
         finishBtn.widthAnchor.constraint(equalTo: sendFilesBtn.widthAnchor).isActive = true
@@ -262,9 +272,11 @@ class ScanViewController: UIViewController, ConnListener {
     private func styleBtn(_ b: UIButton, title: String) {
         b.setTitle(title, for: .normal)
         b.setTitleColor(.white, for: .normal)
-        b.backgroundColor = UIColor(hex: 0x2A2A2A)
+        // 复刻安卓 Material3 默认按钮主色（紫），醒目
+        b.backgroundColor = UIColor(hex: 0x6750A4)
         b.layer.cornerRadius = 8
         b.titleLabel?.font = .systemFont(ofSize: 14)
+        b.contentEdgeInsets = UIEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
         b.translatesAutoresizingMaskIntoConstraints = false
     }
 

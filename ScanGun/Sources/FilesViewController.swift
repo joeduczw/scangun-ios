@@ -92,7 +92,19 @@ class FilesViewController: UIViewController, ConnListener {
         closeBtn.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
         titleRow.addArrangedSubview(closeBtn)
 
-        // 任务状态黄条（手动发送进度提示）
+        // 内容区竖直容器：状态条 + 全选/删除行 + 间隔行（对齐安卓布局顺序：操作行紧跟标题栏下）
+        let contentStack = UIStackView()
+        contentStack.axis = .vertical
+        contentStack.spacing = 6
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(contentStack)
+        NSLayoutConstraint.activate([
+            contentStack.topAnchor.constraint(equalTo: titleRow.bottomAnchor, constant: 4),
+            contentStack.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
+            contentStack.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12)
+        ])
+
+        // 任务状态黄条（手动发送进度提示；stack 内 hidden 自动收起不占位）
         sendingBar.font = .systemFont(ofSize: 12)
         sendingBar.textColor = UIColor(hex: 0x121212)
         sendingBar.backgroundColor = UIColor(hex: 0xF9A825)
@@ -101,28 +113,30 @@ class FilesViewController: UIViewController, ConnListener {
         sendingBar.layer.cornerRadius = 6
         sendingBar.clipsToBounds = true
         sendingBar.isHidden = true
-        sendingBar.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(sendingBar)
-        NSLayoutConstraint.activate([
-            sendingBar.topAnchor.constraint(equalTo: titleRow.bottomAnchor, constant: 8),
-            sendingBar.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
-            sendingBar.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
-            sendingBar.heightAnchor.constraint(equalToConstant: 40)
-        ])
+        contentStack.addArrangedSubview(sendingBar)
+        sendingBar.heightAnchor.constraint(equalToConstant: 40).isActive = true
+
+        // 操作行：全选 / 删除所选（紧跟标题栏/状态条下，对齐安卓）
+        let opRow = UIStackView()
+        opRow.axis = .horizontal
+        opRow.spacing = 8
+        opRow.distribution = .fillEqually
+        contentStack.addArrangedSubview(opRow)
+        opRow.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        styleBtn(selectAllBtn, title: "全选")
+        selectAllBtn.addTarget(self, action: #selector(selectAllTapped), for: .touchUpInside)
+        opRow.addArrangedSubview(selectAllBtn)
+        styleBtn(deleteBtn, title: "删除所选")
+        deleteBtn.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
+        opRow.addArrangedSubview(deleteBtn)
 
         // 发送间隔行
         let intervalRow = UIStackView()
         intervalRow.axis = .horizontal
         intervalRow.spacing = 8
         intervalRow.alignment = .center
-        intervalRow.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(intervalRow)
-        NSLayoutConstraint.activate([
-            intervalRow.topAnchor.constraint(equalTo: sendingBar.bottomAnchor, constant: 8),
-            intervalRow.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
-            intervalRow.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
-            intervalRow.heightAnchor.constraint(equalToConstant: 34)
-        ])
+        contentStack.addArrangedSubview(intervalRow)
+        intervalRow.heightAnchor.constraint(equalToConstant: 34).isActive = true
         intervalLabel.text = "发送间隔："
         intervalLabel.font = .systemFont(ofSize: 13)
         intervalLabel.textColor = .white
@@ -147,30 +161,10 @@ class FilesViewController: UIViewController, ConnListener {
         tableView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
-            tableView.topAnchor.constraint(equalTo: intervalRow.bottomAnchor, constant: 8),
+            tableView.topAnchor.constraint(equalTo: contentStack.bottomAnchor, constant: 4),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12)
         ])
-
-        // 操作行：全选 / 删除所选
-        let opRow = UIStackView()
-        opRow.axis = .horizontal
-        opRow.spacing = 8
-        opRow.distribution = .fillEqually
-        opRow.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(opRow)
-        NSLayoutConstraint.activate([
-            opRow.topAnchor.constraint(equalTo: tableView.bottomAnchor, constant: 8),
-            opRow.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
-            opRow.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
-            opRow.heightAnchor.constraint(equalToConstant: 38)
-        ])
-        styleBtn(selectAllBtn, title: "全选")
-        selectAllBtn.addTarget(self, action: #selector(selectAllTapped), for: .touchUpInside)
-        opRow.addArrangedSubview(selectAllBtn)
-        styleBtn(deleteBtn, title: "删除所选")
-        deleteBtn.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
-        opRow.addArrangedSubview(deleteBtn)
 
         // 底部提示
         tipLabel.text = "勾选已发送的文件=整文件重发；文件发送后保留，可重发或删除"
@@ -197,7 +191,7 @@ class FilesViewController: UIViewController, ConnListener {
             bottomRow.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
             bottomRow.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
             bottomRow.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -12),
-            bottomRow.heightAnchor.constraint(equalToConstant: 52)
+            bottomRow.heightAnchor.constraint(equalToConstant: 66)
         ])
         styleBtn(manualSendBtn, title: "手动发送")
         manualSendBtn.titleLabel?.font = .boldSystemFont(ofSize: 15)
@@ -217,7 +211,7 @@ class FilesViewController: UIViewController, ConnListener {
         sendPanel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(sendPanel)
         NSLayoutConstraint.activate([
-            sendPanel.topAnchor.constraint(equalTo: sendingBar.bottomAnchor, constant: 8),
+            sendPanel.topAnchor.constraint(equalTo: contentStack.topAnchor),
             sendPanel.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
             sendPanel.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
             sendPanel.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -12)
@@ -264,7 +258,8 @@ class FilesViewController: UIViewController, ConnListener {
     private func styleBtn(_ b: UIButton, title: String) {
         b.setTitle(title, for: .normal)
         b.setTitleColor(.white, for: .normal)
-        b.backgroundColor = UIColor(hex: 0x2A2A2A)
+        // 复刻安卓 Material3 默认按钮主色（紫），醒目
+        b.backgroundColor = UIColor(hex: 0x6750A4)
         b.layer.cornerRadius = 8
         b.titleLabel?.font = .systemFont(ofSize: 13)
         b.translatesAutoresizingMaskIntoConstraints = false
@@ -529,7 +524,7 @@ class FilesViewController: UIViewController, ConnListener {
         }
     }
 
-    /// 全部发送完成：退出面板恢复列表
+    /// 全部发送完成：退出面板恢复列表；取消全部勾选（防止再点发送按钮误重发）
     private func finishAll() {
         sending = false
         mode = .none
@@ -543,6 +538,8 @@ class FilesViewController: UIViewController, ConnListener {
         sendingBar.isHidden = true
         updateManualBtn()
         CenterToast.show("全部发送完成（文件保留，可重发或手动删除）", duration: 2.6)
+        checked.removeAll()
+        updateSelectAllBtn()
         reload()
     }
 
