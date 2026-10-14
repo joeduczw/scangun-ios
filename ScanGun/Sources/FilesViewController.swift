@@ -174,7 +174,7 @@ class FilesViewController: UIViewController, ConnListener {
         tipLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tipLabel)
         NSLayoutConstraint.activate([
-            tipLabel.topAnchor.constraint(equalTo: opRow.bottomAnchor, constant: 8),
+            tipLabel.topAnchor.constraint(equalTo: tableView.bottomAnchor, constant: 8),
             tipLabel.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
             tipLabel.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12)
         ])

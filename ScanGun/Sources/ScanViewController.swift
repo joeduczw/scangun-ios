@@ -229,6 +229,10 @@ class ScanViewController: UIViewController, ConnListener {
             b.addTarget(self, action: sel, for: .touchUpInside)
             funcRow.addArrangedSubview(b)
         }
+        // 初始标题（模式按钮由 applyMode 设置；其余三个在此设置，避免空白按钮）
+        torchBtn.setTitle("闪光灯 关", for: .normal)
+        manualBtn.setTitle("手动输入", for: .normal)
+        pairBtn.setTitle("重新配对", for: .normal)
 
         // 统计栏
         let statsRow = UIStackView()
@@ -249,9 +253,11 @@ class ScanViewController: UIViewController, ConnListener {
         statsLabel.minimumScaleFactor = 0.55
         statsRow.addArrangedSubview(statsLabel)
         styleBtn(clearBtn, title: "清零")
+        clearBtn.setContentCompressionResistancePriority(.required, for: .horizontal)
         clearBtn.addTarget(self, action: #selector(clearTapped), for: .touchUpInside)
         statsRow.addArrangedSubview(clearBtn)
         styleBtn(historyBtn, title: "扫描历史")
+        historyBtn.setContentCompressionResistancePriority(.required, for: .horizontal)
         historyBtn.addTarget(self, action: #selector(historyTapped), for: .touchUpInside)
         statsRow.addArrangedSubview(historyBtn)
 
