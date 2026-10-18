@@ -46,6 +46,9 @@ class FilesViewController: UIViewController, ConnListener {
     private var curLines: [String] = []
     private var curLineIdx = 0
     private var pendingMsgId: String?
+    /// 上一次 ACK 确认成功时刻（手动发送节奏防抖基准：距其不足「发送间隔」内点击静默忽略，
+    /// 防电脑应用系统未消化完上一条就敲入下一条导致前后码错乱；失败不更新，重试不受限）
+    private var lastAckOkAt = Date.distantPast
     private var intervalMs = 500
     private var originalProgress: [Int] = []    // 任务开始时进度快照（重新发送恢复用）
     private var paused = false
@@ -409,6 +412,10 @@ class FilesViewController: UIViewController, ConnListener {
             return
         }
         // 继续发下一条（断线暂停后也从这里续）
+        // 节奏防抖：距上次确认成功不足「发送间隔」内点击静默忽略（ACK 只代表客户机已敲入，
+        // 电脑应用系统消化上一条还需要时间，点太快前后码会错乱；参考主界面扫描按钮防抖）
+        // 间隔实时读「发送间隔」设置：手动任务无锁定概念（锁定仅限自动模式任务内节奏），改设置立即生效
+        if Date().timeIntervalSince(lastAckOkAt) * 1000 < Double(Prefs.shared.sendIntervalMs) { return }
         sending = true
         updateSendingBar()
         sendCurrentLine()
@@ -502,6 +509,7 @@ class FilesViewController: UIViewController, ConnListener {
         guard sending, msgId == pendingMsgId else { return }
         let f = sendQueue[curIdx]
         if ok {
+            lastAckOkAt = Date()   // 手动发送节奏防抖基准：本条确认成功时刻
             curLineIdx += 1
             ScanStorage.saveProgress(f.url, sent: curLineIdx)
             if curLineIdx >= curLines.count {
