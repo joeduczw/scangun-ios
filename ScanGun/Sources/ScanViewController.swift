@@ -44,6 +44,9 @@ class ScanViewController: UIViewController, ConnListener {
     private var lastCode = ""
     private var lastCodeAt = Date.distantPast
     private var lastSendAt = Date.distantPast
+    /// 连续帧复核：上一次解出的待复核码值与时刻（500ms 窗口内相邻两帧同码才采纳，拦偶发单帧误读）
+    private var pendingConfirmCode: String?
+    private var pendingConfirmAt = Date.distantPast
     private var lastScanSuccessAt = Date.distantPast   // 最近识别成功时刻（扫描按钮1秒防抖用）
 
     // MARK: - 本次统计（APP 启动后累计，可手动清零，重启自动归零）
@@ -706,14 +709,24 @@ extension ScanViewController: AVCaptureMetadataOutputObjectsDelegate {
         }
         guard let hit = best else { return }
 
+        // 连续帧复核：同一码在 500ms 窗口内被相邻两次解出才采纳；单帧偶发误读（边缘帧
+        // 解出的另一个『有效』码）直接丢弃。代价约 100~200ms，对准即扫体验无感
+        let now = Date()
+        if hit.value == pendingConfirmCode, now.timeIntervalSince(pendingConfirmAt) <= 0.5 {
+            pendingConfirmCode = nil   // 复核通过，复位等待下一个码的首见
+        } else {
+            pendingConfirmCode = hit.value
+            pendingConfirmAt = now
+            return   // 首见只登记，等相邻帧复核
+        }
+
         if Prefs.shared.manualMode {
-            // 手动模式：仅在扫描会话进行中识别，识别到立即结束会话
+            // 手动模式：仅在扫描会话进行中识别，识别到（并复核通过）立即结束会话
             guard scanSession else { return }
             endSession()
             onScan(hit.value, hit.type)
         } else {
             // 自动模式：连续识别，冷却去重防重复发送
-            let now = Date()
             if now.timeIntervalSince(lastSendAt) < 0.7 { return }
             if hit.value == lastCode, now.timeIntervalSince(lastCodeAt) < 2.0 { return }
             lastCode = hit.value
