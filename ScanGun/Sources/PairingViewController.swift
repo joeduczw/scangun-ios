@@ -6,6 +6,7 @@ class PairingViewController: UIViewController {
     private let hostField = UITextField()
     private let portField = UITextField()
     private let tokenField = UITextField()
+    private let nameField = UITextField()
     private let stack = UIStackView()
 
     // 自动扫描区
@@ -78,11 +79,14 @@ class PairingViewController: UIViewController {
         addField(hostField, placeholder: "客户机 IP（如 192.168.1.100）", keyboard: .numbersAndPunctuation)
         addField(portField, placeholder: "端口（默认 8899）", keyboard: .numberPad)
         addField(tokenField, placeholder: "6位配对码（客户机主界面显示）", keyboard: .numberPad)
+        addField(nameField, placeholder: "设备名称（接收器「已连接设备」中显示，默认自动生成）", keyboard: .default)
 
         // 回填已保存的值（换客户机/重置配对码时方便修改）
         if !Prefs.shared.host.isEmpty { hostField.text = Prefs.shared.host }
         if !Prefs.shared.token.isEmpty { tokenField.text = Prefs.shared.token }
         portField.text = String(Prefs.shared.port)
+        // 设备名称：预填当前名（首次访问自动生成 机型-随机后缀），可改成如「仓库1-张三的手机」
+        nameField.text = Prefs.shared.deviceName
 
         let saveBtn = UIButton(type: .system)
         saveBtn.setTitle("保存并连接", for: .normal)
@@ -101,6 +105,14 @@ class PairingViewController: UIViewController {
         tip.textAlignment = .center
         tip.text = "说明：手机与客户机需在同一 WiFi；\n客户机显示名称可在其「修改名称」中设置。"
         stack.addArrangedSubview(tip)
+
+        // 版本号小字（来自 project.yml 的 MARKETING_VERSION，发版只改配置）
+        let verLabel = UILabel()
+        verLabel.font = .systemFont(ofSize: 12)
+        verLabel.textColor = .gray
+        verLabel.textAlignment = .center
+        verLabel.text = "APP 版本：" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "-")
+        stack.addArrangedSubview(verLabel)
 
         startScan()
     }
@@ -183,6 +195,9 @@ class PairingViewController: UIViewController {
         Prefs.shared.host = host
         Prefs.shared.port = port
         Prefs.shared.token = token
+        // 设备名称：留空保持原名，限 20 字；重连即以新名字发 HELLO
+        let devName = (nameField.text ?? "").trimmingCharacters(in: .whitespaces)
+        if !devName.isEmpty { Prefs.shared.deviceName = String(devName.prefix(20)) }
 
         CenterToast.show("已保存，正在连接…")
 
