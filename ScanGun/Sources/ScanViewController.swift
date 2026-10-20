@@ -337,14 +337,17 @@ class ScanViewController: UIViewController, ConnListener {
     }
 
     // MARK: - 商品验证 UI
-    /// 验证按钮状态：开启=绿字「验证开启」，关闭=白字「验证关闭」并隐藏信息栏
+    /// 验证按钮状态：开启=默认底色绿字「验证开启」；关闭=红底白字「验证关闭」
+    /// （红色警示：当前扫码不过商品验证直接发送），同时隐藏信息栏
     private func applyVerifyBtn() {
         if Prefs.shared.verifyMode {
             verifyBtn.setTitle("验证开启", for: .normal)
             verifyBtn.setTitleColor(UIColor(hex: 0x66BB6A), for: .normal)
+            verifyBtn.backgroundColor = UIColor(hex: 0x6750A4)
         } else {
             verifyBtn.setTitle("验证关闭", for: .normal)
             verifyBtn.setTitleColor(.white, for: .normal)
+            verifyBtn.backgroundColor = UIColor(hex: 0xC62828)
             verifyInfoLabel.isHidden = true
         }
     }
