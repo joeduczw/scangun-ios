@@ -41,8 +41,10 @@ enum ScanStorage {
         return (displayName(name), countLines(url))
     }
 
-    /// 追加一条条码到活动文件（无活动文件则自动创建新文件）。返回活动文件累计条数
-    static func append(_ code: String) -> Int {
+    /// 追加一条条码到活动文件（无活动文件则自动创建新文件）。
+    /// product：商品信息三项「代码|颜色|尺码」（验证通过的记录携带），行格式 `条码|代码|颜色|尺码`；
+    /// 无商品信息时整行只有条码（兼容旧格式）。返回活动文件累计条数
+    static func append(_ code: String, product: String = "") -> Int {
         var name = UserDefaults.standard.string(forKey: keyCurrent)
         if name == nil || !fm.fileExists(atPath: dir.appendingPathComponent(name!).path) {
             let f = DateFormatter()
@@ -51,21 +53,22 @@ enum ScanStorage {
             UserDefaults.standard.set(name, forKey: keyCurrent)
         }
         let url = dir.appendingPathComponent(name!)
-        let data = (code + "\n").data(using: .utf8)!
+        let line = product.isEmpty ? code : code + "|" + product
+        let lineData = (line + "\n").data(using: .utf8)!
         if fm.fileExists(atPath: url.path) {
             if let h = FileHandle(forWritingAtPath: url.path) {
                 h.seekToEndOfFile()
-                h.write(data)
+                h.write(lineData)
                 try? h.close()
             }
         } else {
-            try? data.write(to: url)
+            try? lineData.write(to: url)
         }
         return countLines(url)
     }
 
     /// 撤销当前活动文件的最后一条（存储模式扫错码时用）。
-    /// 返回被撤销的内容；无活动文件或文件已空返回 nil
+    /// 返回被撤销的条码（| 前部分，不携带商品信息）；无活动文件或文件已空返回 nil
     static func undoLast() -> String? {
         guard let name = UserDefaults.standard.string(forKey: keyCurrent) else { return nil }
         let url = dir.appendingPathComponent(name)
@@ -75,7 +78,26 @@ enum ScanStorage {
         guard let removed = lines.popLast() else { return nil }
         let newText = lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
         try? newText.write(to: url, atomically: true, encoding: .utf8)
-        return removed
+        return removed.components(separatedBy: "|").first ?? removed
+    }
+
+    /// 存档条目：code=条码，product=商品信息（"代码 颜色 尺码" 空格连接，无商品信息为空串）
+    struct Entry {
+        let code: String
+        let product: String
+    }
+
+    /// 读取整个文件的条目列表（发送与详情浏览用）：行格式 `条码|代码|颜色|尺码`，
+    /// 兼容旧格式（整行即条码）
+    static func readEntries(_ url: URL) -> [Entry] {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return text.components(separatedBy: "\n")
+            .filter { !$0.isEmpty }
+            .map { l in
+                let parts = l.components(separatedBy: "|")
+                return Entry(code: parts.first ?? l,
+                             product: parts.dropFirst().filter { !$0.isEmpty }.joined(separator: " "))
+            }
     }
 
     /// 结束并封存当前活动文件（可在封存时改名）。返回（显示名, 条数）；无活动文件返回 nil。

@@ -13,6 +13,7 @@ final class Prefs {
     private let kManualMode = "manualMode"       // 扫描模式（默认手动：按一下扫一次）
     private let kStorageMode = "storageMode"     // 存储扫描开关（默认开启：只存不发）
     private let kSendIntervalMs = "sendIntervalMs" // 文件批量发送条间隔（默认500ms）
+    private let kVerifyMode = "verifyMode"       // 商品验证开关（每次启动强制开启，可临时关闭）
 
     var host: String {
         get { d.string(forKey: kHost) ?? "" }
@@ -54,5 +55,12 @@ final class Prefs {
     var sendIntervalMs: Int {
         get { d.object(forKey: kSendIntervalMs) as? Int ?? 500 }
         set { d.set(newValue, forKey: kSendIntervalMs) }
+    }
+
+    /// 商品验证开关：扫码先经单据核对系统验证，完整匹配才发送/存储。
+    /// 每次启动 APP 强制开启（主界面 viewDidLoad 写 true），用户可临时关闭但不记忆关闭状态
+    var verifyMode: Bool {
+        get { d.object(forKey: kVerifyMode) == nil ? true : d.bool(forKey: kVerifyMode) }
+        set { d.set(newValue, forKey: kVerifyMode) }
     }
 }

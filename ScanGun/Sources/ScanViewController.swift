@@ -22,9 +22,11 @@ class ScanViewController: UIViewController, ConnListener {
     private let flashView = UIView()
     private let flashLabel = UILabel()
     private let modeBtn = UIButton(type: .system)
+    private let verifyBtn = UIButton(type: .system)
     private let torchBtn = UIButton(type: .system)
     private let manualBtn = UIButton(type: .system)
     private let pairBtn = UIButton(type: .system)
+    private let verifyInfoLabel = UILabel()
     private let statsLabel = UILabel()
     private let clearBtn = UIButton(type: .system)
     private let historyBtn = UIButton(type: .system)
@@ -56,11 +58,28 @@ class ScanViewController: UIViewController, ConnListener {
     private var cntPending = 0
     private var statsState: [String: Int] = [:]   // msgId -> 0发送/1成功/2失败
 
+    // MARK: - 商品验证（单据核对系统）
+    /// 验证进行中（HTTP 请求中或失败弹框显示中）：识别回调一律忽略新码
+    private var verifying = false
+    /// 最近一次验证失败的码值与时刻（点确定后 2 秒内同一码不再触发验证，防码还对着镜头关框立即又弹）
+    private var verifyFailCode = ""
+    private var verifyFailAt = Date.distantPast
+    /// 验证接口（10 秒超时）
+    private let verifyApi = "http://192.168.1.179:171/api.php"
+    private var verifySession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 10
+        cfg.timeoutIntervalForResource = 10
+        return URLSession(configuration: cfg)
+    }()
+
     // MARK: - 生命周期
     override func viewDidLoad() {
         super.viewDidLoad()
         // 每次打开 APP 默认存储扫描模式（不保留上次的选择）
         Prefs.shared.storageMode = true
+        // 商品验证每次启动强制开启（用户可临时关闭，但不记忆关闭状态）
+        Prefs.shared.verifyMode = true
         view.backgroundColor = UIColor(hex: 0x0E0E0E)
         buildUI()
         setupCamera()
@@ -204,7 +223,24 @@ class ScanViewController: UIViewController, ConnListener {
             scanBtn.heightAnchor.constraint(equalToConstant: 58)
         ])
 
-        // 功能按钮行：模式 / 闪光灯 / 手动输入 / 重新配对
+        // 商品验证信息栏：叠于扫描按钮正上方（透明背景、纯红色大字），验证开关关闭时隐藏
+        verifyInfoLabel.font = .boldSystemFont(ofSize: 18)
+        verifyInfoLabel.textColor = UIColor(hex: 0xFF5252)
+        verifyInfoLabel.textAlignment = .center
+        verifyInfoLabel.numberOfLines = 1
+        verifyInfoLabel.adjustsFontSizeToFitWidth = true
+        verifyInfoLabel.minimumScaleFactor = 0.5
+        verifyInfoLabel.isHidden = true
+        verifyInfoLabel.translatesAutoresizingMaskIntoConstraints = false
+        previewView.addSubview(verifyInfoLabel)
+        NSLayoutConstraint.activate([
+            verifyInfoLabel.centerXAnchor.constraint(equalTo: previewView.centerXAnchor),
+            verifyInfoLabel.bottomAnchor.constraint(equalTo: scanBtn.topAnchor, constant: -12),
+            verifyInfoLabel.leadingAnchor.constraint(greaterThanOrEqualTo: previewView.leadingAnchor, constant: 10),
+            verifyInfoLabel.trailingAnchor.constraint(lessThanOrEqualTo: previewView.trailingAnchor, constant: -10)
+        ])
+
+        // 功能按钮行：模式 / 商品验证 / 闪光灯 / 手动输入 / 重新配对
         let funcRow = UIStackView()
         funcRow.axis = .horizontal
         funcRow.distribution = .fillEqually
@@ -217,7 +253,8 @@ class ScanViewController: UIViewController, ConnListener {
             funcRow.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -10),
             funcRow.heightAnchor.constraint(equalToConstant: 52)
         ])
-        for (b, sel) in [(modeBtn, #selector(modeTapped)), (torchBtn, #selector(torchTapped)),
+        for (b, sel) in [(modeBtn, #selector(modeTapped)), (verifyBtn, #selector(verifyTapped)),
+                         (torchBtn, #selector(torchTapped)),
                          (manualBtn, #selector(manualTapped)), (pairBtn, #selector(pairTapped))] {
             styleBtn(b, title: "")
             b.titleLabel?.font = .systemFont(ofSize: 13)
@@ -267,6 +304,7 @@ class ScanViewController: UIViewController, ConnListener {
         previewView.addGestureRecognizer(doubleTap)
 
         applyStorageBtn()
+        applyVerifyBtn()
         applyMode()
     }
 
@@ -296,6 +334,40 @@ class ScanViewController: UIViewController, ConnListener {
         renderStats()
         CenterToast.show(Prefs.shared.storageMode ? "存储扫描已开启：扫码只存不发，在「储存发送」中统一发送"
                                                   : "存储扫描已关闭：扫码恢复即扫即发")
+    }
+
+    // MARK: - 商品验证 UI
+    /// 验证按钮状态：开启=绿字「验证开启」，关闭=白字「验证关闭」并隐藏信息栏
+    private func applyVerifyBtn() {
+        if Prefs.shared.verifyMode {
+            verifyBtn.setTitle("验证开启", for: .normal)
+            verifyBtn.setTitleColor(UIColor(hex: 0x66BB6A), for: .normal)
+        } else {
+            verifyBtn.setTitle("验证关闭", for: .normal)
+            verifyBtn.setTitleColor(.white, for: .normal)
+            verifyInfoLabel.isHidden = true
+        }
+    }
+
+    /// 点一次切换一次：开启时扫码先验证后发送/存储
+    @objc private func verifyTapped() {
+        Prefs.shared.verifyMode.toggle()
+        applyVerifyBtn()
+        CenterToast.show(Prefs.shared.verifyMode ? "商品验证已开启：扫码先验证后发送" : "商品验证已关闭")
+    }
+
+    /// 商品信息自动消失规则：存储模式不自动消失（点「结束存档」才清空）；实时模式（手动/自动）10秒消失
+    private func scheduleVerifyInfoAutoClear() {
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(clearVerifyInfo), object: nil)
+        if Prefs.shared.storageMode { return }
+        perform(#selector(clearVerifyInfo), with: nil, afterDelay: 10)
+    }
+
+    /// 立即清空商品信息并取消自动消失计时
+    @objc private func clearVerifyInfo() {
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(clearVerifyInfo), object: nil)
+        verifyInfoLabel.text = ""
+        verifyInfoLabel.isHidden = true
     }
 
     /// 撤销：删除当前活动文件的最后一条存储记录（仅存储模式可用）。
@@ -414,6 +486,8 @@ class ScanViewController: UIViewController, ConnListener {
             return
         }
         scanSession = true
+        // 新扫描开始：前一次商品信息立即清空隐藏，验证成功后由 onVerifyResult 显示新信息
+        clearVerifyInfo()
         scanBtn.setTitle("识别中…\n（点按取消）", for: .normal)
         scanBtn.backgroundColor = UIColor(hex: 0x555555)
         sessionTimeout?.cancel()
@@ -478,6 +552,7 @@ class ScanViewController: UIViewController, ConnListener {
 
     // MARK: - 结束存档
     @objc private func finishTapped() {
+        clearVerifyInfo()   // 结束存档：立即清空最后一次扫描的商品信息
         guard let info = ScanStorage.currentInfo() else {
             CenterToast.show("当前没有存储中的文件（先开启存储扫描并扫码）")
             return
@@ -531,28 +606,122 @@ class ScanViewController: UIViewController, ConnListener {
         sendFilesBtn.setTitle(n > 0 ? "储存发送(\(n))" : "储存发送", for: .normal)
     }
 
-    // MARK: - 扫码入口（取景框筛选后）
+    // MARK: - 扫码入口（取景框筛选后）：验证开启时先验证，通过才发送/存储
     private func onScan(_ code: String, _ type: String) {
         lastScanSuccessAt = Date()   // 扫描按钮防抖基准：识别成功时刻
+        if Prefs.shared.verifyMode {
+            // 商品验证开启：先经单据核对系统验证，通过才走发送/存储分流
+            startVerify(code, type)
+        } else {
+            dispatchScan(code, type)
+        }
+    }
+
+    /// 发送/存储分流（验证开关关闭，或验证完整匹配通过后调用），两条路径行为一致。
+    ///  product：商品验证通过的商品信息三项（"商品代码|颜色|尺码"），随记录写入历史与存储文件；
+    ///  未开验证/验证失败时为空串
+    private func dispatchScan(_ code: String, _ type: String, product: String = "") {
         guard Prefs.shared.isPaired else {
             CenterToast.show("请先完成配对（点底部「重新配对」）")
             Beep.fail()
             return
         }
         if Prefs.shared.storageMode {
-            // 存储模式：只存不发，实时写入活动文件
-            let n = ScanStorage.append(code)
+            // 存储模式：只存不发，实时写入活动文件（验证通过的行含商品信息）
+            let n = ScanStorage.append(code, product: product)
             cntTotal += 1
-            HistoryStore.shared.addStored(code)
+            HistoryStore.shared.addStored(code, product: product)
             Beep.ok()
             flash("已存储（本文件 \(n) 条）\n\(code)", style: .good)
             renderStats()
             return
         }
         let msgId = ConnectionManager.shared.sendScan(code, type: type)
-        HistoryStore.shared.addPending(msgId, code)
+        HistoryStore.shared.addPending(msgId, code, product: product)
         statsSend(msgId)
         flash("已发送\n\(code)", style: .neutral)
+    }
+
+    // MARK: - 商品验证（单据核对系统）
+    /// 验证条码：异步 GET 单据核对系统接口，完整匹配通过才走原发送/存储流程
+    private func startVerify(_ code: String, _ type: String) {
+        // 验证进行中/弹框显示中忽略（识别回调开头已拦，此处兜底手动输入路径）
+        if verifying { return }
+        // 防重复弹框：同一码验证失败关框后 2 秒内不再触发验证
+        if code == verifyFailCode, Date().timeIntervalSince(verifyFailAt) < 2.0 { return }
+        verifying = true
+        // URLComponents 正确编码条码中的特殊字符（& = ? 等）
+        var comps = URLComponents(string: verifyApi)
+        comps?.queryItems = [
+            URLQueryItem(name: "action", value: "barcode"),
+            URLQueryItem(name: "bc", value: code)
+        ]
+        guard let url = comps?.url else {
+            onVerifyResult(code, type, nil)
+            return
+        }
+        verifySession.dataTask(with: url) { [weak self] data, _, _ in
+            let body = data.flatMap { String(data: $0, encoding: .utf8) }
+            DispatchQueue.main.async {
+                self?.onVerifyResult(code, type, body)
+            }
+        }.resume()
+    }
+
+    /// 验证结果处理（主线程）：完整匹配→显示商品信息+走原流程；部分匹配/未匹配→弹框丢弃；异常→弹框丢弃
+    private func onVerifyResult(_ code: String, _ type: String, _ body: String?) {
+        guard let data = body?.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            // 网络异常：请求失败/超时/非 JSON
+            Beep.fail()
+            HistoryStore.shared.addVerifyFail(code, status: .verifyFail)
+            showVerifyFailDialog(code, "网络异常，无法验证商品")
+            return
+        }
+        let success = obj["success"] as? Bool ?? false
+        let partial = obj["partial"] as? Bool ?? false
+        let str = { (k: String) in obj[k] as? String ?? "" }
+        if success && !partial {
+            // 完整匹配：更新商品信息栏（代码 名称 颜色 尺码）+ 成功音，走原发送/存储流程
+            verifyInfoLabel.text = [str("spdm"), str("spmc"), str("gg1mc"), str("gg2mc")]
+                .filter { !$0.isEmpty }.joined(separator: " ")
+            verifyInfoLabel.isHidden = false
+            scheduleVerifyInfoAutoClear()
+            Beep.ok()
+            verifying = false
+            // 记录携带的商品信息三项（代码 颜色 尺码，不带名称）：写入历史与存储文件
+            let product = [str("spdm"), str("gg1mc"), str("gg2mc")]
+                .filter { !$0.isEmpty }.joined(separator: "|")
+            dispatchScan(code, type, product: product)
+        } else if success && partial {
+            // 部分匹配：只有商品无颜色尺码，丢弃
+            let spmc = [str("spdm"), str("spmc")].filter { !$0.isEmpty }.joined(separator: " ")
+            Beep.fail()
+            HistoryStore.shared.addVerifyFail(code, status: .unmatched)
+            showVerifyFailDialog(code, "条码仅匹配到商品，无颜色/尺码\n商品：\(spmc)\n码值：\(code)")
+        } else {
+            // 未匹配到商品，丢弃
+            Beep.fail()
+            HistoryStore.shared.addVerifyFail(code, status: .unmatched)
+            showVerifyFailDialog(code, "本条码未匹配到商品\n码值：\(code)")
+        }
+    }
+
+    /// 验证失败弹框：红色加粗文字 + 单「确定」按钮；点确定记录失败码并恢复扫描采纳
+    private func showVerifyFailDialog(_ code: String, _ msg: String) {
+        let a = UIAlertController(title: nil, message: msg, preferredStyle: .alert)
+        // message 设为红色加粗（对齐安卓版视觉；侧载企业内使用，KVC 私有属性无审核风险）
+        let attr = NSAttributedString(string: msg, attributes: [
+            .font: UIFont.boldSystemFont(ofSize: 17),
+            .foregroundColor: UIColor(hex: 0xFF5252)
+        ])
+        a.setValue(attr, forKey: "attributedMessage")
+        a.addAction(UIAlertAction(title: "确定", style: .default) { _ in
+            self.verifyFailCode = code
+            self.verifyFailAt = Date()
+            self.verifying = false
+        })
+        present(a, animated: true)
     }
 
     // MARK: - ConnListener
@@ -688,6 +857,8 @@ extension ScanViewController: AVCaptureMetadataOutputObjectsDelegate {
     func metadataOutput(_ output: AVCaptureMetadataOutput,
                         didOutput metadataObjects: [AVMetadataObject],
                         from connection: AVCaptureConnection) {
+        // 商品验证进行中（HTTP 请求中/失败弹框显示中）：忽略新识别，必须验证完一个才能扫下一个
+        if verifying { return }
         guard let layer = previewLayer else { return }
         // 取景框判定：只认码中心落在取景框（每边略放大）内的码；多个码取最居中的
         let fr = frameBox.frame

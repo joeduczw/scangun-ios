@@ -476,7 +476,9 @@ class FilesViewController: UIViewController, ConnListener {
 
     private func sendCurrentLine() {
         sending = true   // 每条发出即进入"等待确认"状态
-        let code = curLines[curLineIdx]
+        // 只发条码部分（| 后是商品信息，不参与发送；兼容旧格式整行即条码）
+        let line = curLines[curLineIdx]
+        let code = line.components(separatedBy: "|").first ?? line
         let msgId = ConnectionManager.shared.sendScanDirect(code, type: "文件发送")
         guard let msgId = msgId else {
             pauseSending(reason: "连接已断开")
@@ -734,6 +736,18 @@ extension FilesViewController: UITableViewDataSource, UITableViewDelegate {
         files.count
     }
 
+    /// 点击文件行：弹出明细浏览（逐条显示条码与商品信息；点勾选框只切换勾选，不触发）
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: false)
+        showFileDetail(files[indexPath.row])
+    }
+
+    /// 文件明细浏览：深色底列表，逐条显示「序号. 条码 → 商品代码 颜色 尺码」
+    /// （商品信息绿色显示，与扫描历史页一致；无商品信息的记录只显示条码；只读不影响发送流程）
+    private func showFileDetail(_ f: ScanStorage.StoredFile) {
+        present(FileDetailViewController(file: f), animated: true)
+    }
+
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "fileCell")
             ?? UITableViewCell(style: .subtitle, reuseIdentifier: "fileCell")
@@ -782,5 +796,116 @@ extension FilesViewController: UITableViewDataSource, UITableViewDelegate {
             cb.setTitle("✓", for: .normal)
         }
         updateSelectAllBtn()
+    }
+}
+
+/// 文件明细浏览页（对齐安卓 showFileDetail）：
+/// 深色底列表逐条显示「序号. 条码 → 商品代码 颜色 尺码」（商品信息绿字），
+/// 无商品信息的记录（未开验证时存的旧档）只显示「序号. 条码」；只读浏览
+class FileDetailViewController: UIViewController {
+
+    private let file: ScanStorage.StoredFile
+    private var entries: [ScanStorage.Entry] = []
+    private let tableView = UITableView()
+
+    init(file: ScanStorage.StoredFile) {
+        self.file = file
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .fullScreen
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIColor(hex: 0x1E1E1E)
+        entries = ScanStorage.readEntries(file.url)
+        buildUI()
+    }
+
+    private func buildUI() {
+        let safe = view.safeAreaLayoutGuide
+
+        // 标题行：文件名 | 条数 | 关闭
+        let titleRow = UIStackView()
+        titleRow.axis = .horizontal
+        titleRow.spacing = 8
+        titleRow.alignment = .center
+        titleRow.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(titleRow)
+        NSLayoutConstraint.activate([
+            titleRow.topAnchor.constraint(equalTo: safe.topAnchor, constant: 8),
+            titleRow.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
+            titleRow.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
+            titleRow.heightAnchor.constraint(equalToConstant: 40)
+        ])
+        let title = UILabel()
+        title.text = "\(file.name)（\(entries.count) 条）"
+        title.font = .boldSystemFont(ofSize: 16)
+        title.textColor = .white
+        title.adjustsFontSizeToFitWidth = true
+        title.minimumScaleFactor = 0.6
+        titleRow.addArrangedSubview(title)
+        let spacer = UIView()
+        titleRow.addArrangedSubview(spacer)
+        let closeBtn = UIButton(type: .system)
+        closeBtn.setTitle("关闭", for: .normal)
+        closeBtn.setTitleColor(.white, for: .normal)
+        closeBtn.backgroundColor = UIColor(hex: 0x2A2A2A)
+        closeBtn.layer.cornerRadius = 8
+        closeBtn.titleLabel?.font = .systemFont(ofSize: 13)
+        closeBtn.contentEdgeInsets = UIEdgeInsets(top: 6, left: 14, bottom: 6, right: 14)
+        closeBtn.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+        titleRow.addArrangedSubview(closeBtn)
+
+        // 条目列表
+        tableView.dataSource = self
+        tableView.backgroundColor = .clear
+        tableView.separatorColor = UIColor(white: 0.25, alpha: 1)
+        tableView.rowHeight = 46
+        tableView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(tableView)
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: titleRow.bottomAnchor, constant: 8),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+    }
+
+    @objc private func closeTapped() { dismiss(animated: true) }
+}
+
+extension FileDetailViewController: UITableViewDataSource {
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        entries.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "detailCell")
+            ?? UITableViewCell(style: .default, reuseIdentifier: "detailCell")
+        let e = entries[indexPath.row]
+        cell.backgroundColor = UIColor(hex: 0x2A2A2A)
+        cell.selectionStyle = .none
+        cell.textLabel?.font = .systemFont(ofSize: 13)
+        if e.product.isEmpty {
+            cell.textLabel?.text = "\(indexPath.row + 1). \(e.code)"
+            cell.textLabel?.textColor = .white
+        } else {
+            // 商品信息部分绿色显示（与扫描历史页一致）
+            let ssb = NSMutableAttributedString(string: "\(indexPath.row + 1). \(e.code) → ",
+                                                attributes: [
+                .font: UIFont.systemFont(ofSize: 13),
+                .foregroundColor: UIColor.white
+            ])
+            ssb.append(NSAttributedString(string: e.product, attributes: [
+                .font: UIFont.boldSystemFont(ofSize: 13),
+                .foregroundColor: UIColor(hex: 0x66BB6A)
+            ]))
+            cell.textLabel?.attributedText = ssb
+        }
+        cell.textLabel?.adjustsFontSizeToFitWidth = true
+        cell.textLabel?.minimumScaleFactor = 0.55
+        return cell
     }
 }

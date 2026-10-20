@@ -123,24 +123,44 @@ extension HistoryViewController: UITableViewDataSource, UITableViewDelegate {
         let items = HistoryStore.shared.snapshot()
         guard indexPath.row < items.count else { return cell }
         let it = items[indexPath.row]
-        let text: String, color: UIColor
+        let base: String, color: UIColor
         switch it.status {
         case .ok:
-            text = "\(it.time)  √  \(it.content)"
+            base = "\(it.time)  √  \(it.content)"
             color = UIColor(hex: 0xA5D6A7)
         case .fail:
-            text = "\(it.time)  ×  \(it.content)\(it.reason.isEmpty ? "" : "（\(it.reason)）")"
+            base = "\(it.time)  ×  \(it.content)\(it.reason.isEmpty ? "" : "（\(it.reason)）")"
             color = UIColor(hex: 0xFF8A80)
         case .stored:
-            text = "\(it.time)  已存  \(it.content)"
+            base = "\(it.time)  已存  \(it.content)"
             color = UIColor(hex: 0xA5D6A7)
+        case .unmatched:
+            base = "\(it.time)  未匹配  \(it.content)"
+            color = UIColor(hex: 0xFF8A80)
+        case .verifyFail:
+            base = "\(it.time)  验证失败  \(it.content)"
+            color = UIColor(hex: 0xFF8A80)
         default:
-            text = "\(it.time)  …  \(it.content)"
+            base = "\(it.time)  …  \(it.content)"
             color = UIColor(hex: 0xB0BEC5)
         }
-        cell.textLabel?.text = text
-        cell.textLabel?.textColor = color
+        // 有商品信息（验证通过）：码值后附「商品代码 颜色 尺码」，绿色加粗
         cell.textLabel?.font = .systemFont(ofSize: 13)
+        if it.product.isEmpty {
+            cell.textLabel?.text = base
+            cell.textLabel?.textColor = color
+        } else {
+            let ssb = NSMutableAttributedString(string: base, attributes: [
+                .font: UIFont.systemFont(ofSize: 13),
+                .foregroundColor: color
+            ])
+            ssb.append(NSAttributedString(string: "  " + it.product.replacingOccurrences(of: "|", with: " "),
+                                          attributes: [
+                .font: UIFont.boldSystemFont(ofSize: 13),
+                .foregroundColor: UIColor(hex: 0x66BB6A)
+            ]))
+            cell.textLabel?.attributedText = ssb
+        }
         cell.textLabel?.adjustsFontSizeToFitWidth = true
         cell.textLabel?.minimumScaleFactor = 0.55
         cell.backgroundColor = UIColor(hex: 0x2A2A2A)
