@@ -265,6 +265,12 @@ class ScanViewController: UIViewController, ConnListener {
                          (manualBtn, #selector(manualTapped)), (pairBtn, #selector(pairTapped))] {
             styleBtn(b, title: "")
             b.titleLabel?.font = .systemFont(ofSize: 13)
+            // 5 键平分屏宽，单行放不下 4-5 字标题（显示成「验...启」）：允许两行换行完整显示（对齐安卓方案）
+            b.titleLabel?.numberOfLines = 2
+            b.titleLabel?.lineBreakMode = .byWordWrapping
+            b.titleLabel?.textAlignment = .center
+            // 收窄水平内边距给文字让位（原左右 12pt 挤掉近半可用宽度）
+            b.contentEdgeInsets = UIEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
             b.addTarget(self, action: sel, for: .touchUpInside)
             funcRow.addArrangedSubview(b)
         }
