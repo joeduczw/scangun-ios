@@ -2,7 +2,9 @@ import UIKit
 
 /// 配对页：UDP 自动扫描客户机（点击设备自动填入 IP/端口）+ 历史连接（点击直连/切换）
 /// + 手动输入 + 商品验证端口设置 + 保存
-class PairingViewController: UIViewController {
+/// 键盘收起三保险：键盘工具条「收起键盘」按钮（数字键盘无 return 键）+ 点空白收起
+/// + return 键收起；键盘弹出时抬高滚动区底边（保存按钮可滚到键盘上方不被遮挡）
+class PairingViewController: UIViewController, UITextFieldDelegate, UIGestureRecognizerDelegate {
 
     private let hostField = UITextField()
     private let portField = UITextField()
@@ -11,6 +13,7 @@ class PairingViewController: UIViewController {
     private let stack = UIStackView()
     private let verifyInnerField = UITextField()
     private let verifyOuterField = UITextField()
+    private let scroll = UIScrollView()
 
     // 自动扫描区
     private let scanState = UILabel()
@@ -33,7 +36,7 @@ class PairingViewController: UIViewController {
         view.backgroundColor = UIColor(white: 0.96, alpha: 1)
 
         // 整页可滚动（发现列表 + 输入区在小屏上可能超出一屏）
-        let scroll = UIScrollView()
+        let scroll = self.scroll
         scroll.alwaysBounceVertical = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scroll)
@@ -43,6 +46,17 @@ class PairingViewController: UIViewController {
             scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+
+        // 点击输入框以外的空白区域收起键盘（点在输入框/按钮上不拦截，见手势代理）
+        let tap = UITapGestureRecognizer(target: self, action: #selector(hideKeyboard))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        view.addGestureRecognizer(tap)
+        // 键盘弹出/收起时调整滚动区底边（「保存并连接」可滚到键盘上方）
+        NotificationCenter.default.addObserver(self, selector: #selector(kbWillShow(_:)),
+                                               name: UIResponder.keyboardWillShowNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(kbWillHide(_:)),
+                                               name: UIResponder.keyboardWillHideNotification, object: nil)
 
         let stack = self.stack
         stack.axis = .vertical
@@ -146,6 +160,9 @@ class PairingViewController: UIViewController {
             f.textAlignment = .center
             f.widthAnchor.constraint(equalToConstant: 76).isActive = true
             f.heightAnchor.constraint(equalToConstant: 44).isActive = true
+            f.returnKeyType = .done
+            f.delegate = self
+            f.inputAccessoryView = makeKeyboardToolbar()
         }
         verifyInnerField.text = String(Prefs.shared.verifyInnerPort)
         verifyOuterField.text = String(Prefs.shared.verifyOuterPort)
@@ -276,6 +293,48 @@ class PairingViewController: UIViewController {
 
     @objc private func rescanTapped() { startScan() }
 
+    // MARK: - 键盘收起（三保险：工具条按钮 / 点空白 / return 键）
+
+    /// 键盘上方通用工具条：右侧「收起键盘」按钮。
+    /// 数字键盘（端口/配对码/验证端口）没有 return 键，iOS 系统不提供收起按钮，统一靠此工具条
+    private func makeKeyboardToolbar() -> UIToolbar {
+        let bar = UIToolbar(frame: CGRect(x: 0, y: 0, width: view.bounds.width, height: 44))
+        bar.items = [
+            UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil),
+            UIBarButtonItem(title: "收起键盘", style: .done, target: self, action: #selector(hideKeyboard))
+        ]
+        bar.sizeToFit()
+        return bar
+    }
+
+    /// 收起键盘（工具条按钮 / 点空白 / return 键共用）
+    @objc private func hideKeyboard() { view.endEditing(true) }
+
+    /// return 键直接收起（IP/设备名称等带 return 键的键盘）
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        textField.resignFirstResponder()
+        return true
+    }
+
+    /// 点在输入框/按钮上时 tap 手势不处理（输入框正常切换焦点、按钮正常响应点击）
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        !(touch.view is UITextField) && !(touch.view is UIControl)
+    }
+
+    /// 键盘弹出：抬高滚动区底边，「保存并连接」可滚到键盘上方
+    @objc private func kbWillShow(_ n: Notification) {
+        guard let frame = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
+        let inset = frame.height - view.safeAreaInsets.bottom
+        scroll.contentInset.bottom = inset
+        scroll.scrollIndicatorInsets = UIEdgeInsets(top: 0, left: 0, bottom: inset, right: 0)
+    }
+
+    /// 键盘收起：恢复滚动区底边
+    @objc private func kbWillHide(_ n: Notification) {
+        scroll.contentInset.bottom = 0
+        scroll.scrollIndicatorInsets = .zero
+    }
+
     // MARK: - 手动输入
 
     private func addField(_ f: UITextField, placeholder: String, keyboard: UIKeyboardType) {
@@ -286,6 +345,9 @@ class PairingViewController: UIViewController {
         f.autocapitalizationType = .none
         f.font = .systemFont(ofSize: 16)
         f.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        f.returnKeyType = .done
+        f.delegate = self
+        f.inputAccessoryView = makeKeyboardToolbar()
         stack.addArrangedSubview(f)
     }
 
