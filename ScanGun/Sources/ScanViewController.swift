@@ -64,8 +64,14 @@ class ScanViewController: UIViewController, ConnListener {
     /// 最近一次验证失败的码值与时刻（点确定后 2 秒内同一码不再触发验证，防码还对着镜头关框立即又弹）
     private var verifyFailCode = ""
     private var verifyFailAt = Date.distantPast
-    /// 验证接口（10 秒超时）
-    private let verifyApi = "http://192.168.1.179:171/api.php"
+    /// 验证接口地址（10 秒超时）：按上次成功的地址选内部/外部（网络异常自动回退切换）
+    private var verifyApi: String {
+        Prefs.shared.verifyUseOuter
+            ? "http://www.joedu.vip:\(Prefs.shared.verifyOuterPort)/api.php"
+            : "http://192.168.1.179:\(Prefs.shared.verifyInnerPort)/api.php"
+    }
+    /// 验证地址回退标志：本码已切换过一次地址则不再切（防两个地址都不可达时无限循环）
+    private var verifyRetried = false
     private var verifySession: URLSession = {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 10
@@ -109,6 +115,12 @@ class ScanViewController: UIViewController, ConnListener {
                                     y: b.height * 0.19 + fh + 12,
                                     width: frameTip.bounds.width,
                                     height: frameTip.bounds.height)
+            // 商品信息栏：取景框上方 24pt（不紧挨框，显眼且不遮挡取景），
+            // 宽度铺满预览区（超长自动缩字号），随取景框一起动态定位
+            let fy = b.height * 0.19
+            let fit = verifyInfoLabel.sizeThatFits(CGSize(width: b.width - 20, height: .greatestFiniteMagnitude))
+            verifyInfoLabel.frame = CGRect(x: 10, y: max(0, fy - 24 - fit.height),
+                                           width: b.width - 20, height: fit.height)
         }
     }
 
@@ -223,22 +235,17 @@ class ScanViewController: UIViewController, ConnListener {
             scanBtn.heightAnchor.constraint(equalToConstant: 58)
         ])
 
-        // 商品验证信息栏：叠于扫描按钮正上方（透明背景、纯红色大字），验证开关关闭时隐藏
-        verifyInfoLabel.font = .boldSystemFont(ofSize: 18)
+        // 商品验证信息栏：显示在取景框上方（与框顶保持一定间隔，不紧挨），
+        // 透明背景、纯红色大字（24号显眼），验证开关关闭时隐藏。
+        // ⚠️ 手动布局（viewDidLayoutSubviews 设 frame，随取景框动态定位）
+        verifyInfoLabel.font = .boldSystemFont(ofSize: 24)
         verifyInfoLabel.textColor = UIColor(hex: 0xFF5252)
         verifyInfoLabel.textAlignment = .center
         verifyInfoLabel.numberOfLines = 1
         verifyInfoLabel.adjustsFontSizeToFitWidth = true
         verifyInfoLabel.minimumScaleFactor = 0.5
         verifyInfoLabel.isHidden = true
-        verifyInfoLabel.translatesAutoresizingMaskIntoConstraints = false
         previewView.addSubview(verifyInfoLabel)
-        NSLayoutConstraint.activate([
-            verifyInfoLabel.centerXAnchor.constraint(equalTo: previewView.centerXAnchor),
-            verifyInfoLabel.bottomAnchor.constraint(equalTo: scanBtn.topAnchor, constant: -12),
-            verifyInfoLabel.leadingAnchor.constraint(greaterThanOrEqualTo: previewView.leadingAnchor, constant: 10),
-            verifyInfoLabel.trailingAnchor.constraint(lessThanOrEqualTo: previewView.trailingAnchor, constant: -10)
-        ])
 
         // 功能按钮行：模式 / 商品验证 / 闪光灯 / 手动输入 / 重新配对
         let funcRow = UIStackView()
@@ -653,6 +660,7 @@ class ScanViewController: UIViewController, ConnListener {
         // 防重复弹框：同一码验证失败关框后 2 秒内不再触发验证
         if code == verifyFailCode, Date().timeIntervalSince(verifyFailAt) < 2.0 { return }
         verifying = true
+        verifyRetried = false
         // URLComponents 正确编码条码中的特殊字符（& = ? 等）
         var comps = URLComponents(string: verifyApi)
         comps?.queryItems = [
@@ -671,10 +679,18 @@ class ScanViewController: UIViewController, ConnListener {
         }.resume()
     }
 
-    /// 验证结果处理（主线程）：完整匹配→显示商品信息+走原流程；部分匹配/未匹配→弹框丢弃；异常→弹框丢弃
+    /// 验证结果处理（主线程）：完整匹配→显示商品信息+走原流程；部分匹配/未匹配→弹框丢弃；异常→自动换地址重试一次→弹框丢弃
     private func onVerifyResult(_ code: String, _ type: String, _ body: String?) {
         guard let data = body?.data(using: .utf8),
               let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            // 网络异常：自动切换内部/外部地址重试一次（记住切换后的地址），两个地址都失败才弹框
+            if !verifyRetried {
+                verifyRetried = true
+                Prefs.shared.verifyUseOuter.toggle()
+                verifying = false
+                startVerify(code, type)
+                return
+            }
             // 网络异常：请求失败/超时/非 JSON
             Beep.fail()
             HistoryStore.shared.addVerifyFail(code, status: .verifyFail)

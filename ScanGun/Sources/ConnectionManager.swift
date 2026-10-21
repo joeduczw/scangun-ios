@@ -150,6 +150,9 @@ final class ConnectionManager {
         guard let cmd = parts.first else { return }   // 空消息防御（越界崩溃）
         if cmd == "WELCOME" {
             let machine = parts.count > 1 ? parts[1] : "客户机"
+            // 连接真正成功：记录配对历史（配对页「历史连接」列表数据源，最多 20 条）
+            Prefs.shared.recordPairHistory(name: machine, host: Prefs.shared.host,
+                                           port: Prefs.shared.port, token: Prefs.shared.token)
             DispatchQueue.main.async {
                 self.pcName = machine
                 self.notify { $0.connWelcome(machine: machine) }

@@ -1,6 +1,7 @@
 import UIKit
 
-/// 配对页：UDP 自动扫描客户机（点击设备自动填入 IP/端口）+ 手动输入 + 保存
+/// 配对页：UDP 自动扫描客户机（点击设备自动填入 IP/端口）+ 历史连接（点击直连/切换）
+/// + 手动输入 + 商品验证端口设置 + 保存
 class PairingViewController: UIViewController {
 
     private let hostField = UITextField()
@@ -8,12 +9,24 @@ class PairingViewController: UIViewController {
     private let tokenField = UITextField()
     private let nameField = UITextField()
     private let stack = UIStackView()
+    private let verifyInnerField = UITextField()
+    private let verifyOuterField = UITextField()
 
     // 自动扫描区
     private let scanState = UILabel()
     private let deviceStack = UIStackView()
     private var devices: [DiscoveryClient.Device] = []
     private var scanToken = 0
+
+    // 历史连接区（连接成功过的客户机，点击直接连接/切换）
+    private let histEmpty = UILabel()
+    private let histStack = UIStackView()
+    private var histItems: [Prefs.PairHistItem] = []
+    private let histFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f
+    }()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -69,6 +82,23 @@ class PairingViewController: UIViewController {
         rescanBtn.addTarget(self, action: #selector(rescanTapped), for: .touchUpInside)
         stack.addArrangedSubview(rescanBtn)
 
+        // ---- 历史连接区（连接成功过的客户机，点击直接连接/切换当前连接） ----
+        let histTitle = UILabel()
+        histTitle.text = "历史连接"
+        histTitle.font = .boldSystemFont(ofSize: 17)
+        histTitle.textAlignment = .center
+        stack.addArrangedSubview(histTitle)
+
+        histEmpty.text = "暂无连接记录（连接成功后自动保存）"
+        histEmpty.font = .systemFont(ofSize: 13)
+        histEmpty.textColor = .gray
+        histEmpty.textAlignment = .center
+        stack.addArrangedSubview(histEmpty)
+
+        histStack.axis = .vertical
+        histStack.spacing = 8
+        stack.addArrangedSubview(histStack)
+
         // ---- 手动输入区 ----
         let title = UILabel()
         title.text = "客户机信息（在客户机主界面查看）"
@@ -87,6 +117,38 @@ class PairingViewController: UIViewController {
         portField.text = String(Prefs.shared.port)
         // 设备名称：预填当前名（首次访问自动生成 机型-随机后缀），可改成如「仓库1-张三的手机」
         nameField.text = Prefs.shared.deviceName
+
+        // 商品验证端口：一行「商品验证端口：内部[输入] 外部[输入]」，验证时内外地址自动切换
+        let portRow = UIStackView()
+        portRow.axis = .horizontal
+        portRow.spacing = 6
+        portRow.alignment = .center
+        stack.addArrangedSubview(portRow)
+        let innerLbl = UILabel()
+        innerLbl.text = "商品验证端口：内部"
+        innerLbl.font = .systemFont(ofSize: 14)
+        innerLbl.textColor = .darkGray
+        innerLbl.setContentCompressionResistancePriority(.required, for: .horizontal)
+        portRow.addArrangedSubview(innerLbl)
+        portRow.addArrangedSubview(verifyInnerField)
+        let outerLbl = UILabel()
+        outerLbl.text = "外部"
+        outerLbl.font = .systemFont(ofSize: 14)
+        outerLbl.textColor = .darkGray
+        outerLbl.setContentCompressionResistancePriority(.required, for: .horizontal)
+        portRow.addArrangedSubview(outerLbl)
+        portRow.addArrangedSubview(verifyOuterField)
+        for (f, def) in [(verifyInnerField, 171), (verifyOuterField, 172)] {
+            f.placeholder = String(def)
+            f.borderStyle = .roundedRect
+            f.keyboardType = .numberPad
+            f.font = .systemFont(ofSize: 15)
+            f.textAlignment = .center
+            f.widthAnchor.constraint(equalToConstant: 76).isActive = true
+            f.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        }
+        verifyInnerField.text = String(Prefs.shared.verifyInnerPort)
+        verifyOuterField.text = String(Prefs.shared.verifyOuterPort)
 
         let saveBtn = UIButton(type: .system)
         saveBtn.setTitle("保存并连接", for: .normal)
@@ -114,7 +176,51 @@ class PairingViewController: UIViewController {
         verLabel.text = "APP 版本：" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "-")
         stack.addArrangedSubview(verLabel)
 
+        renderHistory()
         startScan()
+    }
+
+    // MARK: - 历史连接
+
+    /// 渲染历史连接列表（当前连接的客户机行尾标「当前」）
+    private func renderHistory() {
+        histStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let items = Prefs.shared.pairHistory
+        histItems = items
+        histEmpty.isHidden = !items.isEmpty
+        for (i, item) in items.enumerated() {
+            let current = item.host == Prefs.shared.host
+                && item.port == Prefs.shared.port && item.token == Prefs.shared.token
+            let b = UIButton(type: .system)
+            b.tag = i
+            b.setTitle("\(item.name)\(current ? "（当前）" : "")\n\(item.host):\(item.port) · \(histFmt.string(from: item.lastTime))", for: .normal)
+            b.setTitleColor(.black, for: .normal)
+            b.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
+            b.titleLabel?.numberOfLines = 2
+            b.titleLabel?.textAlignment = .center
+            b.backgroundColor = .white
+            b.layer.cornerRadius = 8
+            b.layer.borderWidth = 1
+            b.layer.borderColor = UIColor(white: 0.85, alpha: 1).cgColor
+            b.contentEdgeInsets = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+            b.heightAnchor.constraint(equalToConstant: 58).isActive = true
+            b.addTarget(self, action: #selector(histTapped(_:)), for: .touchUpInside)
+            histStack.addArrangedSubview(b)
+        }
+    }
+
+    /// 点击历史行：用该客户机的地址/配对码直接连接（已连其他机器则切换）
+    @objc private func histTapped(_ sender: UIButton) {
+        guard histItems.indices.contains(sender.tag) else { return }
+        let it = histItems[sender.tag]
+        Prefs.shared.host = it.host
+        Prefs.shared.port = it.port
+        Prefs.shared.token = it.token
+        CenterToast.show("正在连接「\(it.name)」…")
+        ConnectionManager.shared.reconnectWithNewPrefs()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.view.window?.rootViewController = ScanViewController()
+        }
     }
 
     // MARK: - UDP 自动发现
@@ -198,6 +304,11 @@ class PairingViewController: UIViewController {
         // 设备名称：留空保持原名，限 20 字；重连即以新名字发 HELLO
         let devName = (nameField.text ?? "").trimmingCharacters(in: .whitespaces)
         if !devName.isEmpty { Prefs.shared.deviceName = String(devName.prefix(20)) }
+        // 商品验证端口：留空/非法回退默认值（内部171/外部172）
+        let innerPort = Int((verifyInnerField.text ?? "").trimmingCharacters(in: .whitespaces)) ?? 171
+        let outerPort = Int((verifyOuterField.text ?? "").trimmingCharacters(in: .whitespaces)) ?? 172
+        Prefs.shared.verifyInnerPort = (1...65535).contains(innerPort) ? innerPort : 171
+        Prefs.shared.verifyOuterPort = (1...65535).contains(outerPort) ? outerPort : 172
 
         CenterToast.show("已保存，正在连接…")
 

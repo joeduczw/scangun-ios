@@ -25,8 +25,7 @@ final class HistoryStore {
         var product: String
     }
 
-    private var items: [Item] = []   // 新的在前（index 0）
-    private let maxCount = 50
+    private var items: [Item] = []   // 新的在前（index 0），不限条数全部保留
     private let lock = NSLock()
     private let fmt: DateFormatter = {
         let f = DateFormatter()
@@ -56,7 +55,6 @@ final class HistoryStore {
     private func add(_ item: Item) {
         lock.lock()
         items.insert(item, at: 0)
-        while items.count > maxCount { items.removeLast() }
         lock.unlock()
     }
 
