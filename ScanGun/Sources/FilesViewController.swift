@@ -486,7 +486,8 @@ class FilesViewController: UIViewController, ConnListener {
         }
         pendingMsgId = msgId
         if mode == .auto { updatePanel() }
-        // 超时兜底：3 秒未确认由 ConnectionManager 回调 connAck(ok=false)
+        // 超时兜底：3 秒未确认自动同 msgId 重发一次（客户机按 msgId 去重不会重复录入），
+        // 第二次仍未确认才回调 connAck(ok=false) 暂停
     }
 
     /// 间隔一段时间后发下一条（ACK 已确认，但电脑程序处理需要时间）

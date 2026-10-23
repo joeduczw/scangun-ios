@@ -29,7 +29,7 @@ extension ConnListener {
     func connAck(msgId: String, code: String, ok: Bool, reason: String) {}
 }
 
-/// WebSocket 连接管理（对齐安卓版：ACK确认/3秒超时/指数退避重连/断线outbox补发）
+/// WebSocket 连接管理（对齐安卓版：ACK确认/3秒超时自动重发一次/指数退避重连/断线outbox补发）
 final class ConnectionManager {
     static let shared = ConnectionManager()
 
@@ -41,7 +41,8 @@ final class ConnectionManager {
     private var reconnectAttempt = 0
     private var manualClosed = false
     private var outbox: [(code: String, type: String)] = []   // 断线待发队列
-    private var pendingAcks: [String: (code: String, sentAt: Date)] = [:]
+    // 已发送待确认（type 供超时重发拼报文；retried=已自动重发过一次，第二次超时才判失败）
+    private var pendingAcks: [String: (code: String, type: String, sentAt: Date, retried: Bool)] = [:]
     private var ackTimeoutTimer: Timer?
     private var keepAliveTimer: Timer?
     private let queue = DispatchQueue(label: "ws.conn")
@@ -102,7 +103,7 @@ final class ConnectionManager {
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 self?.sendRaw("HELLO|\(Prefs.shared.deviceName)")
             }
-            self.startTimers()
+            self.startKeepAlive()
         }
     }
 
@@ -113,7 +114,7 @@ final class ConnectionManager {
             self.task?.cancel(with: .goingAway, reason: nil)
             self.task = nil
             self.setState(.disconnected)
-            self.stopTimers()
+            self.stopKeepAlive()
             if manual { self.outbox.removeAll(); self.pendingAcks.removeAll() }
         }
     }
@@ -186,7 +187,8 @@ final class ConnectionManager {
             guard let self = self else { return }
             if self.state == .connected {
                 self.sendRaw(payload)
-                self.pendingAcks[msgId] = (code, Date())
+                self.pendingAcks[msgId] = (code, type, Date(), false)
+                self.ensureAckTimer()
             } else {
                 self.outbox.append((code, type))   // 断线缓存，重连补发
                 DispatchQueue.main.async {
@@ -207,7 +209,8 @@ final class ConnectionManager {
         queue.sync {
             if state == .connected, task != nil {
                 sendRaw("SCAN|\(msgId)|\(type)|\(code)")
-                pendingAcks[msgId] = (code, Date())
+                pendingAcks[msgId] = (code, type, Date(), false)
+                ensureAckTimer()
                 sent = true
             }
         }
@@ -233,17 +236,26 @@ final class ConnectionManager {
         }
     }
 
-    // MARK: - 定时器（ACK超时 + 保活）
+    // MARK: - 定时器（ACK超时扫描 + 保活）
     // ⚠️ Timer 必须在有 RunLoop 的线程创建：GCD 后台队列无 RunLoop，
     // 在那里 scheduledTimer 会永不触发（原 bug：ACK 超时与保活全部失效）
-    private func startTimers() {
-        stopTimers()
+
+    /// ACK 超时扫描：常驻定时器（首个待确认条目入队时启动），不随断线停止——
+    /// 对齐安卓 armAckTimeout 语义：断线后到期的条目按「客户机未确认」及时失败，
+    /// 不冻结在表里等重连才报（否则储存发送页会一直卡在等待确认状态）。
+    private func ensureAckTimer() {
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, self.ackTimeoutTimer == nil else { return }
             self.ackTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 self?.checkAckTimeout()
             }
-            self.keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: true) { [weak self] _ in
+        }
+    }
+
+    private func startKeepAlive() {
+        DispatchQueue.main.async { [weak self] in
+            self?.keepAliveTimer?.invalidate()
+            self?.keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: true) { [weak self] _ in
                 self?.queue.async {
                     self?.task?.sendPing { error in
                         if error != nil { self?.handleDisconnected() }
@@ -253,27 +265,44 @@ final class ConnectionManager {
         }
     }
 
-    private func stopTimers() {
+    private func stopKeepAlive() {
         DispatchQueue.main.async { [weak self] in
-            self?.ackTimeoutTimer?.invalidate(); self?.ackTimeoutTimer = nil
-            self?.keepAliveTimer?.invalidate(); self?.keepAliveTimer = nil
+            self?.keepAliveTimer?.invalidate()
+            self?.keepAliveTimer = nil
         }
     }
 
+    /// ACK 超时处理：3 秒未确认先同 msgId 自动重发一次（网络瞬断/回执丢失场景；
+    /// 客户机 v1.2 按 msgId 去重绝不重复敲入，已处理过的会补回 ACK|0），第二次
+    /// 仍超时（或已断线）才判「客户机未确认」失败——对齐安卓 v19 行为。
     private func checkAckTimeout() {
         let deadline = Date().addingTimeInterval(-3.0)
         // timer 在主线程触发，回 queue 异步取数（queue.sync 若在 queue 上下文调用会死锁）
         queue.async { [weak self] in
             guard let self = self else { return }
-            var timedOut: [(String, String)] = []
+            var retryIds: [String] = []
+            var failIds: [String] = []
             for (id, p) in self.pendingAcks where p.sentAt < deadline {
-                self.pendingAcks.removeValue(forKey: id)
-                timedOut.append((id, p.code))
-            }
-            for (id, code) in timedOut {
-                DispatchQueue.main.async {
-                    self.notify { $0.connAck(msgId: id, code: code, ok: false, reason: "客户机3秒内未确认") }
+                if !p.retried, self.state == .connected, self.task != nil {
+                    retryIds.append(id)
+                } else {
+                    failIds.append(id)
                 }
+            }
+            // 第二次仍超时（或已断线/连接中）：判失败
+            for id in failIds {
+                if let p = self.pendingAcks.removeValue(forKey: id) {
+                    let code = p.code
+                    DispatchQueue.main.async {
+                        self.notify { $0.connAck(msgId: id, code: code, ok: false, reason: "客户机未确认") }
+                    }
+                }
+            }
+            // 首次超时且仍已连接：同 msgId 自动重发一次，重新等 3 秒
+            for id in retryIds {
+                guard let p = self.pendingAcks.removeValue(forKey: id) else { continue }
+                self.sendRaw("SCAN|\(id)|\(p.type)|\(p.code)")
+                self.pendingAcks[id] = (p.code, p.type, Date(), true)
             }
         }
     }
@@ -285,7 +314,7 @@ final class ConnectionManager {
             self.task?.cancel()
             self.task = nil
             self.setState(.disconnected)
-            self.stopTimers()
+            self.stopKeepAlive()
             if self.manualClosed { return }
             self.reconnectAttempt += 1
             let wait = min(30.0, pow(2.0, Double(self.reconnectAttempt - 1)))
