@@ -1,69 +1,108 @@
 import Foundation
 
-/// 扫描记录的本地文件存储（扫码只存不发模式的档案，一行一条）。
-/// 行格式（对齐安卓 v25）：
-/// - 新 8 段（验证通过写入，生成单据时本地聚合免解析）：条码|商品代码|颜色代码|尺码代码|商品名|颜色名|尺码名|单位
-/// - 旧格式：条码  或  条码|商品代码|颜色名|尺码名
-/// - 明细浏览显示口径统一为「商品代码 颜色名 尺码名」（内部代码不显示，新旧格式显示一致）
+/// 存储扫描管理（对齐安卓版 ScanStorage）：
+/// - 活动文件：存储开关开启时，扫码内容实时追加写入（一行一条码），
+///   文件名 = 扫描_yyyyMMdd_HHmmss.txt 自动命名
+/// - 「结束存档」封存活动文件（变为待发送，可改名），下次扫码自动开新文件
+/// - APP 每次启动自动封存上次活动文件（重新打开 APP 即开新文件）
+/// - 断点续发：同名 .prog 文件记录已发送条数，中断后下次从断点继续
+/// - 文件发送后保留（可重发/手动删除），重发已发送文件=清零进度从头整发
+/// - 行格式（对齐安卓 v25）：验证通过写 8 段 `条码|商品代码|颜色代码|尺码代码|商品名|颜色名|尺码名|单位`
+///   （生成单据时本地聚合免解析）；无商品信息时整行只有条码（兼容旧格式）
 enum ScanStorage {
-
     struct StoredFile {
+        let name: String        // 显示名（不含 .txt）
         let url: URL
-        var name: String { url.lastPathComponent }
-        var size: Int { (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0 }
-        /// mtime 文件修改时间（文件列表倒序用）
-        var mtime: Date { (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast }
+        let total: Int          // 总条数
+        let sent: Int           // 已发送条数
+        var savedAt: Date = .distantPast   // 保存时间（文件最后修改时间=最后扫码时刻，改名不影响）
     }
 
-    static func dir() -> URL {
+    private static let keyCurrent = "current_scan_file"
+    private static let fm = FileManager.default
+
+    private static var dir: URL {
         let d = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ScanFiles", isDirectory: true)
-        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: d.path) {
+            try? fm.createDirectory(at: d, withIntermediateDirectories: true)
+        }
         return d
     }
 
-    /// 当前写入目标文件（按日期命名，如 扫描_2026-11-19.txt；当天没有则新建）
-    static func currentFile() -> URL {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        return dir().appendingPathComponent("扫描_\(f.string(from: Date())).txt")
+    /// APP 启动调用：封存上次的活动文件（本次扫码将自动开新文件）
+    static func sealStaleFile() {
+        UserDefaults.standard.removeObject(forKey: keyCurrent)
     }
 
-    /// 追加一行扫描记录，返回当前文件总行数。product=验证通过的商品信息（代码|颜色|尺码），
-    /// sku=完整 8 段 SKU 尾段（商品代码|颜色代码|尺码代码|商品名|颜色名|尺码名|单位）——
-    /// 生成单据时可直接本地聚合，无需再发服务器解析
-    @discardableResult
+    /// 当前活动文件信息（显示名, 累计条数）；无活动文件返回 nil
+    static func currentInfo() -> (String, Int)? {
+        guard let name = UserDefaults.standard.string(forKey: keyCurrent) else { return nil }
+        let url = dir.appendingPathComponent(name)
+        guard fm.fileExists(atPath: url.path) else { return nil }
+        return (displayName(name), countLines(url))
+    }
+
+    /// 追加一条条码到活动文件（无活动文件则自动创建新文件）。
+    /// product：商品信息三项「代码|颜色|尺码」（验证通过的记录携带），行格式 `条码|代码|颜色|尺码`；
+    /// sku：完整 8 段 SKU 尾段（商品代码|颜色代码|尺码代码|商品名|颜色名|尺码名|单位）——
+    /// 验证模式扫码时服务器已解析过，生成单据时本地聚合免再发服务器（对齐安卓 v25 E 方案）。
+    /// 优先写 sku（含代码+名称+单位），无商品信息时整行只有条码（兼容旧格式）。返回活动文件累计条数
     static func append(_ code: String, product: String = "", sku: String = "") -> Int {
-        let url = currentFile()
+        var name = UserDefaults.standard.string(forKey: keyCurrent)
+        if name == nil || !fm.fileExists(atPath: dir.appendingPathComponent(name!).path) {
+            let f = DateFormatter()
+            f.dateFormat = "yyyyMMdd_HHmmss"
+            name = "扫描_" + f.string(from: Date()) + ".txt"
+            UserDefaults.standard.set(name, forKey: keyCurrent)
+        }
+        let url = dir.appendingPathComponent(name!)
         var line = code
         if !sku.isEmpty { line += "|" + sku }
         else if !product.isEmpty { line += "|" + product }
-        let text = ((try? String(contentsOf: url, encoding: .utf8)) ?? "") + line + "\n"
-        try? text.write(to: url, atomically: true, encoding: .utf8)
-        return text.components(separatedBy: "\n").count - 1
+        let lineData = (line + "\n").data(using: .utf8)!
+        if fm.fileExists(atPath: url.path) {
+            if let h = FileHandle(forWritingAtPath: url.path) {
+                h.seekToEndOfFile()
+                h.write(lineData)
+                try? h.close()
+            }
+        } else {
+            try? lineData.write(to: url)
+        }
+        return countLines(url)
     }
 
-    /// 列出全部存储文件（按修改时间倒序，最新在前）
-    static func list() -> [StoredFile] {
-        let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: dir().path) else { return [] }
-        return names
-            .filter { $0.hasSuffix(".txt") }
-            .map { StoredFile(url: dir().appendingPathComponent($0)) }
-            .sorted { $0.mtime > $1.mtime }
+    /// 撤销当前活动文件的最后一条（存储模式扫错码时用）。
+    /// 返回被撤销的条码（| 前部分，不携带商品信息）；无活动文件或文件已空返回 nil
+    static func undoLast() -> String? {
+        guard let name = UserDefaults.standard.string(forKey: keyCurrent) else { return nil }
+        let url = dir.appendingPathComponent(name)
+        guard fm.fileExists(atPath: url.path),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        var lines = text.components(separatedBy: "\n").filter { !$0.isEmpty }
+        guard let removed = lines.popLast() else { return nil }
+        let newText = lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
+        try? newText.write(to: url, atomically: true, encoding: .utf8)
+        return removed.components(separatedBy: "|").first ?? removed
     }
 
-    struct Entry { let code: String; let product: String }
+    /// 存档条目：code=条码，product=商品信息（"代码 颜色 尺码" 空格连接，无商品信息为空串）
+    struct Entry {
+        let code: String
+        let product: String
+    }
 
-    /// 读文件全部记录：code=条码，product=显示用商品信息（商品代码 颜色名 尺码名）
-    static func readEntries(_ file: StoredFile) -> [Entry] {
-        let text = (try? String(contentsOf: file.url, encoding: .utf8)) ?? ""
+    /// 读取整个文件的条目列表（发送与详情浏览用）：
+    /// 新 8 段行（条码|商品代码|颜色代码|尺码代码|商品名|颜色名|尺码名|单位）显示口径
+    /// 「商品代码 颜色名 尺码名」（与旧格式一致，内部代码不显示）；兼容旧格式（整行即条码）
+    static func readEntries(_ url: URL) -> [Entry] {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
         return text.components(separatedBy: "\n")
-            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .filter { !$0.isEmpty }
             .map { l in
                 let parts = l.components(separatedBy: "|")
                 if parts.count >= 8 {
-                    // 新 8 段格式：显示「商品代码 颜色名 尺码名」（与旧格式口径一致，内部代码不显示）
                     return Entry(code: parts[0],
                                  product: [parts[1], parts[5], parts[6]].filter { !$0.isEmpty }.joined(separator: " "))
                 }
@@ -72,9 +111,94 @@ enum ScanStorage {
             }
     }
 
-    /// 删除文件
-    static func delete(_ file: StoredFile) { try? FileManager.default.removeItem(at: file.url) }
+    /// 结束并封存当前活动文件（可在封存时改名）。返回（显示名, 条数）；无活动文件返回 nil。
+    /// 改名目标重名时不改名、按原名封存（调用方已做重名校验，此处兜底）
+    static func finishCurrent(newName: String?) -> (String, Int)? {
+        guard let oldName = UserDefaults.standard.string(forKey: keyCurrent) else { return nil }
+        let src = dir.appendingPathComponent(oldName)
+        guard fm.fileExists(atPath: src.path) else {
+            UserDefaults.standard.removeObject(forKey: keyCurrent)
+            return nil
+        }
+        let count = countLines(src)
+        var finalName = oldName
+        if let nn = newName, !nn.trimmingCharacters(in: .whitespaces).isEmpty,
+           nn != displayName(oldName) {
+            let target = dir.appendingPathComponent(nn + ".txt")
+            if !fm.fileExists(atPath: target.path) {
+                do {
+                    try fm.moveItem(at: src, to: target)
+                    finalName = nn + ".txt"
+                    // 进度记录跟随改名（活动文件一般无进度，保险起见一并处理）
+                    let oldProg = dir.appendingPathComponent(oldName + ".prog")
+                    if fm.fileExists(atPath: oldProg.path) {
+                        try? fm.moveItem(at: oldProg, to: dir.appendingPathComponent(finalName + ".prog"))
+                    }
+                } catch { /* 改名失败按原名封存 */ }
+            }
+        }
+        UserDefaults.standard.removeObject(forKey: keyCurrent)
+        return (displayName(finalName), count)
+    }
 
-    /// 文件全部发送成功后调用：删除文件
-    static func clearSent(_ file: StoredFile) { try? FileManager.default.removeItem(at: file.url) }
+    /// 指定显示名的存储文件是否已存在（改名时重名校验用）
+    static func nameExists(_ displayName: String) -> Bool {
+        fm.fileExists(atPath: dir.appendingPathComponent(displayName + ".txt").path)
+    }
+
+    /// 全部存储文件列表（含已发送/发送中的，按文件名正序=时间正序），自动排除当前活动文件
+    static func allFiles() -> [StoredFile] {
+        let cur = UserDefaults.standard.string(forKey: keyCurrent)
+        let names = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
+        return names
+            .filter { $0.hasSuffix(".txt") && $0 != cur }
+            .sorted { $0 < $1 }
+            .map { n in
+                let url = dir.appendingPathComponent(n)
+                let savedAt = ((try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date) ?? .distantPast
+                return StoredFile(name: displayName(n), url: url,
+                                  total: countLines(url), sent: readProgress(n), savedAt: savedAt)
+            }
+    }
+
+    /// 从第 from 行（0 起）读取条码内容
+    static func linesFrom(_ url: URL, from: Int) -> [String] {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return text.components(separatedBy: "\n")
+            .filter { !$0.isEmpty }
+            .dropFirst(from)
+            .map { String($0) }
+    }
+
+    /// 保存发送进度（已发送条数）
+    static func saveProgress(_ url: URL, sent: Int) {
+        let prog = dir.appendingPathComponent(url.lastPathComponent + ".prog")
+        if sent <= 0 {
+            try? fm.removeItem(at: prog)
+        } else {
+            try? String(sent).write(to: prog, atomically: true, encoding: .utf8)
+        }
+    }
+
+    /// 删除文件及其进度记录
+    static func delete(_ url: URL) {
+        try? fm.removeItem(at: url)
+        try? fm.removeItem(at: dir.appendingPathComponent(url.lastPathComponent + ".prog"))
+    }
+
+    private static func readProgress(_ fileName: String) -> Int {
+        let prog = dir.appendingPathComponent(fileName + ".prog")
+        guard let s = try? String(contentsOf: prog, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        else { return 0 }
+        return Int(s) ?? 0
+    }
+
+    private static func countLines(_ url: URL) -> Int {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return 0 }
+        return text.components(separatedBy: "\n").filter { !$0.isEmpty }.count
+    }
+
+    private static func displayName(_ name: String) -> String {
+        name.hasSuffix(".txt") ? String(name.dropLast(4)) : name
+    }
 }

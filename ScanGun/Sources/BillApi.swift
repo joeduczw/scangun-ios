@@ -74,7 +74,7 @@ enum BillApi {
             }
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
-            let body = URLComponents()
+            var body = URLComponents()
             body.queryItems = params.map { URLQueryItem(name: $0.key, value: $0.value) }
             req.httpBody = body.percentEncodedQuery?.data(using: .utf8)
             req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
