@@ -635,8 +635,10 @@ class ScanViewController: UIViewController, ConnListener {
 
     /// 发送/存储分流（验证开关关闭，或验证完整匹配通过后调用），两条路径行为一致。
     ///  product：商品验证通过的商品信息三项（"商品代码|颜色|尺码"），随记录写入历史与存储文件；
-    ///  未开验证/验证失败时为空串
-    private func dispatchScan(_ code: String, _ type: String, product: String = "") {
+    ///  未开验证/验证失败时为空串。
+    ///  sku：完整 8 段 SKU 尾段（商品代码|颜色代码|尺码代码|商品名|颜色名|尺码名|单位），
+    ///  验证通过时写入存储文件——生成单据时本地聚合免解析（对齐安卓 v25 E 方案）
+    private func dispatchScan(_ code: String, _ type: String, product: String = "", sku: String = "") {
         guard Prefs.shared.isPaired else {
             CenterToast.show("请先完成配对（点底部「重新配对」）")
             Beep.fail()
@@ -644,7 +646,7 @@ class ScanViewController: UIViewController, ConnListener {
         }
         if Prefs.shared.storageMode {
             // 存储模式：只存不发，实时写入活动文件（验证通过的行含商品信息）
-            let n = ScanStorage.append(code, product: product)
+            let n = ScanStorage.append(code, product: product, sku: sku)
             cntTotal += 1
             HistoryStore.shared.addStored(code, product: product)
             Beep.ok()
@@ -717,7 +719,10 @@ class ScanViewController: UIViewController, ConnListener {
             // 记录携带的商品信息三项（代码 颜色 尺码，不带名称）：写入历史与存储文件
             let product = [str("spdm"), str("gg1mc"), str("gg2mc")]
                 .filter { !$0.isEmpty }.joined(separator: "|")
-            dispatchScan(code, type, product: product)
+            // E 扫码即解析：完整 SKU 8 段写入存储文件（服务器已解析过，生成单据时免再解析）
+            let sku = [str("spdm"), str("gg1dm"), str("gg2dm"), str("spmc"),
+                       str("gg1mc"), str("gg2mc"), str("unit")].joined(separator: "|")
+            dispatchScan(code, type, product: product, sku: sku)
         } else if success && partial {
             // 部分匹配：只有商品无颜色尺码，丢弃
             let spmc = [str("spdm"), str("spmc")].filter { !$0.isEmpty }.joined(separator: " ")

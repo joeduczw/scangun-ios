@@ -15,6 +15,11 @@ class PairingViewController: UIViewController, UITextFieldDelegate, UIGestureRec
     private let verifyOuterField = UITextField()
     private let scroll = UIScrollView()
 
+    // 部门账号区（生成单据用，对齐安卓 v22）：主系统账号编号+密码验证并保存
+    private let deptUserField = UITextField()
+    private let deptPassField = UITextField()
+    private let deptState = UILabel()
+
     // 自动扫描区
     private let scanState = UILabel()
     private let deviceStack = UIStackView()
@@ -166,6 +171,34 @@ class PairingViewController: UIViewController, UITextFieldDelegate, UIGestureRec
         }
         verifyInnerField.text = String(Prefs.shared.verifyInnerPort)
         verifyOuterField.text = String(Prefs.shared.verifyOuterPort)
+
+        // ---- 部门账号区（生成单据用）：输入主系统账号编号+密码，验证通过保存到本机 ----
+        let deptTitle = UILabel()
+        deptTitle.text = "部门账号（生成单据用）"
+        deptTitle.font = .boldSystemFont(ofSize: 17)
+        deptTitle.textAlignment = .center
+        stack.addArrangedSubview(deptTitle)
+
+        addField(deptUserField, placeholder: "部门账号编号（主系统账号编号）", keyboard: .default)
+        deptPassField.isSecureTextEntry = true
+        addField(deptPassField, placeholder: "密码", keyboard: .default)
+        if !Prefs.shared.deptUser.isEmpty { deptUserField.text = Prefs.shared.deptUser }
+        renderDeptState()
+
+        let deptSaveBtn = UIButton(type: .system)
+        deptSaveBtn.setTitle("保存部门", for: .normal)
+        deptSaveBtn.titleLabel?.font = .boldSystemFont(ofSize: 17)
+        deptSaveBtn.backgroundColor = UIColor(red: 0.13, green: 0.45, blue: 0.18, alpha: 1)
+        deptSaveBtn.setTitleColor(.white, for: .normal)
+        deptSaveBtn.layer.cornerRadius = 10
+        deptSaveBtn.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        deptSaveBtn.addTarget(self, action: #selector(deptSaveTapped), for: .touchUpInside)
+        stack.addArrangedSubview(deptSaveBtn)
+
+        deptState.font = .systemFont(ofSize: 15)
+        deptState.textAlignment = .center
+        deptState.numberOfLines = 0
+        stack.addArrangedSubview(deptState)
 
         let saveBtn = UIButton(type: .system)
         saveBtn.setTitle("保存并连接", for: .normal)
@@ -377,6 +410,43 @@ class PairingViewController: UIViewController, UITextFieldDelegate, UIGestureRec
         // 通知主界面切换为扫描页（与旧逻辑一致）
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             self?.view.window?.rootViewController = ScanViewController()
+        }
+    }
+
+    // MARK: - 部门账号（生成单据用）
+
+    /// 当前部门状态显示：已保存显示「当前部门：××」（绿色），未保存为空
+    private func renderDeptState() {
+        if Prefs.shared.deptName.isEmpty {
+            deptState.text = ""
+        } else {
+            deptState.text = "当前部门：\(Prefs.shared.deptName)"
+            deptState.textColor = UIColor(red: 0.13, green: 0.45, blue: 0.18, alpha: 1)
+        }
+    }
+
+    /// 「保存部门」：验证主系统账号（仅内网），成功保存六字段+选项缓存
+    @objc private func deptSaveTapped() {
+        view.endEditing(true)
+        let name = (deptUserField.text ?? "").trimmingCharacters(in: .whitespaces)
+        let pass = deptPassField.text ?? ""
+        if name.isEmpty || pass.isEmpty {
+            CenterToast.show("请输入部门账号编号和密码", duration: 3)
+            return
+        }
+        deptState.text = "正在验证部门账号…"
+        deptState.textColor = .gray
+        BillApi.login(name: name, pass: pass) { [weak self] info, err in
+            guard let self = self else { return }
+            if let info = info {
+                Prefs.shared.setDept(user: name, pass: pass, info: info)
+                self.deptPassField.text = ""      // 密码不回显
+                self.renderDeptState()
+                CenterToast.show("部门已保存：\(info.deptName)（\(BillApi.roleLabel(info.role))）", duration: 3)
+            } else {
+                self.renderDeptState()
+                CenterToast.show(err ?? "验证失败", duration: 3)
+            }
         }
     }
 }

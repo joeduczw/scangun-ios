@@ -23,6 +23,7 @@ class FilesViewController: UIViewController, ConnListener {
     private let tableView = UITableView()
     private let selectAllBtn = UIButton(type: .system)
     private let deleteBtn = UIButton(type: .system)
+    private let billBtn = UIButton(type: .system)   // 生成单据（调货单核对系统 save_bill）
     private let tipLabel = UILabel()
     private let manualSendBtn = UIButton(type: .system)
     private let autoSendBtn = UIButton(type: .system)
@@ -144,6 +145,9 @@ class FilesViewController: UIViewController, ConnListener {
         styleBtn(deleteBtn, title: "删除所选")
         deleteBtn.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
         opRow.addArrangedSubview(deleteBtn)
+        styleBtn(billBtn, title: "生成单据")
+        billBtn.addTarget(self, action: #selector(billTapped), for: .touchUpInside)
+        opRow.addArrangedSubview(billBtn)
 
         // 发送间隔行
         let intervalRow = UIStackView()
@@ -677,6 +681,7 @@ class FilesViewController: UIViewController, ConnListener {
         tableView.isHidden = true
         selectAllBtn.isHidden = true
         deleteBtn.isHidden = true
+        billBtn.isHidden = true
         intervalLabel.isHidden = true
         intervalBtn.isHidden = true
         tipLabel.isHidden = true
@@ -689,6 +694,7 @@ class FilesViewController: UIViewController, ConnListener {
         tableView.isHidden = false
         selectAllBtn.isHidden = false
         deleteBtn.isHidden = false
+        billBtn.isHidden = false
         intervalLabel.isHidden = false
         intervalBtn.isHidden = false
         tipLabel.isHidden = false
@@ -727,7 +733,168 @@ class FilesViewController: UIViewController, ConnListener {
         autoSendBtn.isEnabled = manualMode ? true : en
         deleteBtn.isEnabled = en
         selectAllBtn.isEnabled = en
+        billBtn.isEnabled = en
         tableView.allowsSelection = en
+    }
+
+    // MARK: - 生成单据（货单核对系统，对齐安卓 v22-v26）
+
+    /** 「生成单据」入口：检测部门账号与勾选 → 弹表头选择页（按角色过滤类型与仓店） */
+    @objc private func billTapped() {
+        if Prefs.shared.deptUser.isEmpty || Prefs.shared.deptPass.isEmpty || Prefs.shared.deptRole.isEmpty {
+            CenterToast.showWarn("请先在配对界面设置并保存部门账号")
+            return
+        }
+        let sel = selectedFiles
+        if sel.isEmpty {
+            CenterToast.showWarn("请先勾选要生成单据的文件")
+            return
+        }
+        guard let (whs, shops) = Prefs.shared.deptOptsList() else {
+            CenterToast.show("部门选项缓存为空，请到配对界面重新验证部门账号", duration: 3)
+            return
+        }
+        if whs.isEmpty && shops.isEmpty {
+            CenterToast.show("部门选项缓存为空，请到配对界面重新验证部门账号", duration: 3)
+            return
+        }
+        let vc = BillHeaderViewController(files: sel, whs: whs, shops: shops)
+        vc.modalPresentationStyle = .fullScreen
+        vc.onConfirm = { [weak self] bizDate, billType, whCode, shopCode in
+            self?.generateBill(sel, bizDate: bizDate, billType: billType, whCode: whCode, shopCode: shopCode)
+        }
+        present(vc, animated: true)
+    }
+
+    /** 进度提示浮层（解析/提交单据时） */
+    private let hudLabel = UILabel()
+    private func showHUD(_ text: String) {
+        let wrap = UIView(frame: CGRect(x: 0, y: 0, width: 240, height: 100))
+        wrap.backgroundColor = UIColor(white: 0, alpha: 0.75)
+        wrap.layer.cornerRadius = 12
+        wrap.center = view.center
+        wrap.tag = 0xB111F
+        wrap.isUserInteractionEnabled = true   // 挡住底层操作
+        let sp = UIActivityIndicatorView(style: .whiteLarge)
+        sp.translatesAutoresizingMaskIntoConstraints = false
+        wrap.addSubview(sp)
+        sp.startAnimating()
+        hudLabel.text = text
+        hudLabel.font = .systemFont(ofSize: 15)
+        hudLabel.textColor = .white
+        hudLabel.textAlignment = .center
+        hudLabel.numberOfLines = 0
+        hudLabel.translatesAutoresizingMaskIntoConstraints = false
+        wrap.addSubview(hudLabel)
+        NSLayoutConstraint.activate([
+            sp.centerXAnchor.constraint(equalTo: wrap.centerXAnchor),
+            sp.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 12),
+            hudLabel.leftAnchor.constraint(equalTo: wrap.leftAnchor, constant: 12),
+            hudLabel.rightAnchor.constraint(equalTo: wrap.rightAnchor, constant: -12),
+            hudLabel.topAnchor.constraint(equalTo: sp.bottomAnchor, constant: 10)
+        ])
+        view.addSubview(wrap)
+    }
+    private func updateHUD(_ text: String) { hudLabel.text = text }
+    private func hideHUD() { view.viewWithTag(0xB111F)?.removeFromSuperview() }
+
+    /** 生成流程：收集勾选文件全部条码（按条码去重计数；新 8 段行自带完整 SKU 本地聚合）
+     *  → 缺失的条码发服务器批量解析 → 汇总累加 → save_bill → 提示单号（文件保持原样） */
+    private func generateBill(_ files: [ScanStorage.StoredFile], bizDate: String, billType: String,
+                              whCode: String, shopCode: String) {
+        var bcCount: [String: Int] = [:]
+        var order: [String] = []                       // 保持条码首次出现顺序
+        var localSku: [String: BillApi.Sku] = [:]
+        for f in files {
+            let lines = ((try? String(contentsOf: f.url, encoding: .utf8)) ?? "").components(separatedBy: "\n")
+            for line in lines {
+                let parts = line.components(separatedBy: "|")
+                let bc = parts.first?.trimmingCharacters(in: .whitespaces) ?? ""
+                if bc.isEmpty { continue }
+                if bcCount[bc] == nil { order.append(bc) }
+                bcCount[bc, default: 0] += 1
+                // 新 8 段行（条码|商品代码|颜色代码|尺码代码|商品名|颜色名|尺码名|单位）免服务器解析
+                if parts.count >= 8 && localSku[bc] == nil {
+                    localSku[bc] = BillApi.Sku(bc: bc, spdm: parts[1], spmc: parts[4], unit: parts[7],
+                                               gg1dm: parts[2], gg1mc: parts[5], gg2dm: parts[3], gg2mc: parts[6])
+                }
+            }
+        }
+        guard !bcCount.isEmpty else {
+            CenterToast.show("勾选的文件中没有条码记录")
+            return
+        }
+        let need = order.filter { localSku[$0] == nil }   // 无本地信息的条码才发服务器解析
+        showHUD(need.isEmpty ? "正在提交单据…" : "正在解析条码（\(need.count) 种）…")
+
+        // 提交阶段：合并本地 SKU 与服务器解析结果 → 按 商品+颜色+尺码 累加 → save_bill
+        func submit(_ all: [BillApi.Sku]) {
+            var aggKeys: [String] = []
+            var agg: [String: Int] = [:]                  // key = spdm|gg1dm|gg2dm
+            for sku in all {
+                if sku.spdm.isEmpty || sku.gg1dm.isEmpty || sku.gg2dm.isEmpty {
+                    hideHUD()
+                    let a = UIAlertController(title: "以下条码未能解析，已中止生成", message: sku.bc,
+                                               preferredStyle: .alert)
+                    a.addAction(UIAlertAction(title: "确定", style: .default))
+                    present(a, animated: true)
+                    return
+                }
+                let key = sku.spdm + "|" + sku.gg1dm + "|" + sku.gg2dm
+                if agg[key] == nil { aggKeys.append(key) }
+                agg[key, default: 0] += bcCount[sku.bc] ?? 1
+            }
+            updateHUD("正在提交单据（\(aggKeys.count) 条明细）…")
+            let skus: [[String: Any]] = aggKeys.map { key in
+                let p = key.components(separatedBy: "|")
+                return ["code": p[0], "color_code": p[1], "size_code": p[2], "qty": agg[key] ?? 0]
+            }
+            BillApi.saveBill(bizDate: bizDate, shopCode: shopCode, whCode: whCode,
+                             billType: billType, skus: skus) { [weak self] billNo, err in
+                guard let self = self else { return }
+                self.hideHUD()
+                if let billNo = billNo {
+                    // 成功：单号绿色大字加粗，必须点确定才消失
+                    let a = UIAlertController(title: nil, message: nil, preferredStyle: .alert)
+                    a.setValue(NSAttributedString(string: "单据已生成",
+                                attributes: [.font: UIFont.boldSystemFont(ofSize: 17)]), forKey: "attributedTitle")
+                    a.setValue(NSAttributedString(string: billNo,
+                                attributes: [.font: UIFont.boldSystemFont(ofSize: 22),
+                                             .foregroundColor: UIColor(red: 0.13, green: 0.45, blue: 0.18, alpha: 1)]),
+                               forKey: "attributedMessage")
+                    a.addAction(UIAlertAction(title: "确定", style: .default))
+                    self.present(a, animated: true)
+                } else {
+                    let a = UIAlertController(title: "生成失败", message: err ?? "未知错误",
+                                               preferredStyle: .alert)
+                    a.addAction(UIAlertAction(title: "确定", style: .default))
+                    self.present(a, animated: true)
+                }
+            }
+        }
+
+        if need.isEmpty {
+            submit(order.compactMap { localSku[$0] })
+        } else {
+            BillApi.barcodeBatch(bcs: need) { [weak self] rows, failed, msg in
+                guard let self = self else { return }
+                if let msg = msg {
+                    self.hideHUD()
+                    let a = UIAlertController(title: "条码解析失败", message: msg, preferredStyle: .alert)
+                    a.addAction(UIAlertAction(title: "确定", style: .default))
+                    self.present(a, animated: true)
+                } else if let failed = failed, !failed.isEmpty {
+                    self.hideHUD()
+                    let a = UIAlertController(title: "以下条码解析失败，已中止生成",
+                                              message: failed.joined(separator: "\n"), preferredStyle: .alert)
+                    a.addAction(UIAlertAction(title: "确定", style: .default))
+                    self.present(a, animated: true)
+                } else {
+                    let all = order.compactMap { localSku[$0] } + (rows ?? [])
+                    submit(all)
+                }
+            }
+        }
     }
 }
 

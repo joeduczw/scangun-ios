@@ -87,6 +87,44 @@ final class Prefs {
         set { d.set(newValue, forKey: kVerifyUseOuter) }
     }
 
+    // ==================== 部门账号（生成单据用，对齐安卓 v22） ====================
+
+    /// 部门账号编号/密码（主系统账号，md5 验证）
+    var deptUser: String { get { d.string(forKey: "deptUser") ?? "" } set { d.set(newValue, forKey: "deptUser") } }
+    var deptPass: String { get { d.string(forKey: "deptPass") ?? "" } set { d.set(newValue, forKey: "deptPass") } }
+    /// 部门名称/编号
+    var deptName: String { get { d.string(forKey: "deptName") ?? "" } set { d.set(newValue, forKey: "deptName") } }
+    var deptBianhao: String { get { d.string(forKey: "deptBianhao") ?? "" } set { d.set(newValue, forKey: "deptBianhao") } }
+    /// 角色：all=管理员类 office=办公室 normal=普通部门
+    var deptRole: String { get { d.string(forKey: "deptRole") ?? "" } set { d.set(newValue, forKey: "deptRole") } }
+    /// 登录时缓存的仓库/商店选项集 JSON（生成单据表头用）
+    var deptOpts: String { get { d.string(forKey: "deptOpts") ?? "" } set { d.set(newValue, forKey: "deptOpts") } }
+
+    /// 保存部门账号（验证通过后调用）：六字段 + 选项集缓存
+    func setDept(user: String, pass: String, info: BillApi.DeptInfo) {
+        deptUser = user; deptPass = pass
+        deptName = info.deptName; deptBianhao = info.bianhao; deptRole = info.role
+        let obj: [String: Any] = [
+            "warehouses": info.warehouses.map { ["code": $0.code, "name": $0.name] },
+            "shops": info.shops.map { ["code": $0.code, "name": $0.name] }
+        ]
+        deptOpts = (try? JSONSerialization.data(withJSONObject: obj))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+    }
+
+    /// 解析部门选项缓存；返回 (仓库列表, 商店列表)，缓存无效返回 nil
+    func deptOptsList() -> ([BillApi.Opt], [BillApi.Opt])? {
+        guard let data = deptOpts.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        func list(_ key: String) -> [BillApi.Opt] {
+            ((obj[key] as? [Any]) ?? []).compactMap {
+                ($0 as? [String: Any]).map { BillApi.Opt(code: $0["code"] as? String ?? "",
+                                                         name: $0["name"] as? String ?? "") }
+            }
+        }
+        return (list("warehouses"), list("shops"))
+    }
+
     // ---- 配对历史（连接成功的客户机记录，持久保存，最多 20 条） ----
 
     struct PairHistItem: Codable {
