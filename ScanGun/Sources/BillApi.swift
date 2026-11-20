@@ -66,8 +66,11 @@ enum BillApi {
     }
 
     /// POST 表单：智能选路 + 失败自动换地址重试一次。回调统一回主线程，网络/解析失败回调 nil
+    /// noRoleLimit：不设角色限制（v27 手动输入与商品验证同口径，普通部门也允许外网）
     private static func post(action: String, params: [String: String],
-                             cb: @escaping ([String: Any]?) -> Void, allowOuter: Bool = true) {
+                             cb: @escaping ([String: Any]?) -> Void, allowOuter: Bool = true,
+                             noRoleLimit: Bool = false) {
+        func canOuter() -> Bool { noRoleLimit || Prefs.shared.deptRole != "normal" }
         func go(outer: Bool, allowFallback: Bool) {
             guard let url = URL(string: url(outer: outer, action: action)) else {
                 DispatchQueue.main.async { cb(nil) }; return
@@ -86,7 +89,7 @@ enum BillApi {
                 }
                 if obj != nil {
                     DispatchQueue.main.async { cb(obj) }
-                } else if allowFallback && allowOuter && Prefs.shared.deptRole != "normal" {
+                } else if allowFallback && allowOuter && canOuter() {
                     go(outer: !outer, allowFallback: false)
                 } else {
                     DispatchQueue.main.async { cb(nil) }
@@ -94,7 +97,7 @@ enum BillApi {
             }.resume()
         }
         // 智能选路：不在店内网且角色允许 → 直接走外网（免 5 秒内网超时）；在店内网 → 内网。失误由回退兜底
-        let startOuter = allowOuter && Prefs.shared.deptRole != "normal" && !onInnerNetwork()
+        let startOuter = allowOuter && canOuter() && !onInnerNetwork()
         go(outer: startOuter, allowFallback: true)
     }
 
@@ -171,6 +174,61 @@ enum BillApi {
                 cb(nil, (obj["message"] as? String) ?? "生成失败"); return
             }
             cb(obj["bill_no"] as? String, nil)
+        }
+    }
+
+    // ---- 手动输入（v27）：不设角色限制（与商品验证同口径，普通部门也允许外网） ----
+
+    /// 商品代码模糊搜索：kw=前缀或名称包含；成功回调代码列表（最多 20 条），失败回调错误信息
+    static func spSearch(kw: String, cb: @escaping ([String]?, String?) -> Void) {
+        post(action: "sp_search", params: ["kw": kw], noRoleLimit: true) { obj in
+            guard let obj = obj else { cb(nil, netErr()); return }
+            guard obj["success"] as? Bool == true else {
+                cb(nil, (obj["message"] as? String) ?? "搜索失败"); return
+            }
+            let codes = (obj["codes"] as? [Any])?.compactMap { $0 as? String } ?? []
+            cb(codes, nil)
+        }
+    }
+
+    /// 商品规格结果：颜色/尺码选项 + 商品名称/单位
+    struct GgInfo { let spmc: String; let unit: String; let colors: [Opt]; let sizes: [Opt] }
+
+    /// 商品规格：spdm → 颜色（SPGG1）与尺码（SPGG2）列表，附商品名称/单位；失败回调错误信息
+    static func spGg(spdm: String, cb: @escaping (GgInfo?, String?) -> Void) {
+        post(action: "sp_gg", params: ["spdm": spdm], noRoleLimit: true) { obj in
+            guard let obj = obj else { cb(nil, netErr()); return }
+            guard obj["success"] as? Bool == true else {
+                cb(nil, (obj["message"] as? String) ?? "查询失败"); return
+            }
+            func opts(_ key: String) -> [Opt] {
+                guard let arr = obj[key] as? [Any] else { return [] }
+                return arr.compactMap { item in
+                    guard let o = item as? [String: Any] else { return nil }
+                    return Opt(code: o["code"] as? String ?? "", name: o["name"] as? String ?? "")
+                }
+            }
+            cb(GgInfo(spmc: obj["spmc"] as? String ?? "",
+                      unit: obj["unit"] as? String ?? "",
+                      colors: opts("colors"), sizes: opts("sizes")), nil)
+        }
+    }
+
+    /// SKU 反查条码：spdm+颜色+尺码 → 服务端按 TM 条码方案构造真实条码与完整 8 段信息；失败回调错误信息
+    static func spBarcode(spdm: String, gg1dm: String, gg2dm: String, cb: @escaping (Sku?, String?) -> Void) {
+        post(action: "sp_barcode", params: ["spdm": spdm, "gg1dm": gg1dm, "gg2dm": gg2dm], noRoleLimit: true) { obj in
+            guard let obj = obj else { cb(nil, netErr()); return }
+            guard obj["success"] as? Bool == true else {
+                cb(nil, (obj["message"] as? String) ?? "查询失败"); return
+            }
+            cb(Sku(bc: obj["bc"] as? String ?? "",
+                  spdm: obj["spdm"] as? String ?? "",
+                  spmc: obj["spmc"] as? String ?? "",
+                  unit: obj["unit"] as? String ?? "",
+                  gg1dm: obj["gg1dm"] as? String ?? "",
+                  gg1mc: obj["gg1mc"] as? String ?? "",
+                  gg2dm: obj["gg2dm"] as? String ?? "",
+                  gg2mc: obj["gg2mc"] as? String ?? ""), nil)
         }
     }
 }

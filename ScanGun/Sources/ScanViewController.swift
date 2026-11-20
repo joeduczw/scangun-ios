@@ -541,14 +541,14 @@ class ScanViewController: UIViewController, ConnListener {
 
     // MARK: - 手动输入 / 配对 / 历史跳转
     @objc private func manualTapped() {
-        let a = UIAlertController(title: "手动输入", message: nil, preferredStyle: .alert)
-        a.addTextField { $0.placeholder = "输入要发送的内容" }
-        a.addAction(UIAlertAction(title: "发送", style: .default) { _ in
-            let t = a.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !t.isEmpty { self.onScan(t, "手动输入") }
-        })
-        a.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(a, animated: true)
+        let vc = ManualInputViewController()
+        // 条码输入模式（老版本逻辑）：直接按扫码同路径处理
+        vc.onSendBarcode = { [weak self] bc in self?.dispatchScan(bc, "手动输入") }
+        // 商品代码模式：sp_barcode 构造出的真实条码 + 商品信息三项 + 8 段 SKU，数量 N 时回调 N 次
+        vc.onSendSku = { [weak self] bc, product, sku in
+            self?.dispatchScan(bc, "手动输入", product: product, sku: sku)
+        }
+        present(vc, animated: true)
     }
 
     @objc private func pairTapped() { presentPairing() }
