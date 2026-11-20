@@ -67,9 +67,10 @@ enum BillApi {
 
     /// POST 表单：智能选路 + 失败自动换地址重试一次。回调统一回主线程，网络/解析失败回调 nil
     /// noRoleLimit：不设角色限制（v27 手动输入与商品验证同口径，普通部门也允许外网）
+    /// （cb 放参数列表末位：所有调用点用尾随闭包传入）
     private static func post(action: String, params: [String: String],
-                             cb: @escaping ([String: Any]?) -> Void, allowOuter: Bool = true,
-                             noRoleLimit: Bool = false) {
+                             allowOuter: Bool = true, noRoleLimit: Bool = false,
+                             cb: @escaping ([String: Any]?) -> Void) {
         func canOuter() -> Bool { noRoleLimit || Prefs.shared.deptRole != "normal" }
         func go(outer: Bool, allowFallback: Bool) {
             guard let url = URL(string: url(outer: outer, action: action)) else {
