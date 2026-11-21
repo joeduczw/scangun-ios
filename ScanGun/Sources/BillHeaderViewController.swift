@@ -164,6 +164,7 @@ class BillHeaderViewController: UIViewController {
         remarkField.rightViewMode = .always
         remarkField.autocorrectionType = .no
         remarkField.autocapitalizationType = .none
+        remarkField.returnKeyType = .done
         remarkField.delegate = self
         box.addArrangedSubview(remarkField)
 
@@ -216,7 +217,33 @@ class BillHeaderViewController: UIViewController {
         btnRow.addArrangedSubview(okBtn)
         root.addArrangedSubview(btnRow)
 
+        // 备注键盘收起：点页面任意处（含按钮，不拦截点击）自动收起，避免键盘一直挡住底部按钮
+        let tap = UITapGestureRecognizer(target: self, action: #selector(bgTapped))
+        tap.cancelsTouchesInView = false
+        view.addGestureRecognizer(tap)
+        // 键盘弹出/收起：调整滚动区底部内边距，表单可滚动到键盘上方
+        NotificationCenter.default.addObserver(self, selector: #selector(kbWillShow(_:)),
+                                               name: UIResponder.keyboardWillShowNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(kbWillHide(_:)),
+                                               name: UIResponder.keyboardWillHideNotification, object: nil)
+
         refreshHead()
+    }
+
+    // MARK: - 键盘处理
+
+    /// 点击页面空白/控件处收起备注键盘（cancelsTouchesInView=false 不影响按钮正常响应）
+    @objc private func bgTapped() { view.endEditing(true) }
+
+    @objc private func kbWillShow(_ n: Notification) {
+        let h = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue.height ?? 0
+        scrollView.contentInset.bottom = h
+        scrollView.verticalScrollIndicatorInsets.bottom = h
+    }
+
+    @objc private func kbWillHide(_ n: Notification) {
+        scrollView.contentInset.bottom = 0
+        scrollView.verticalScrollIndicatorInsets.bottom = 0
     }
 
     // MARK: - 选项逻辑（网页 whShopOpts 同款）
@@ -392,5 +419,11 @@ extension BillHeaderViewController: UITextFieldDelegate {
         guard let range = Range(range, in: cur) else { return true }
         let next = cur.replacingCharacters(in: range, with: string)
         return next.count <= 50
+    }
+
+    /// 键盘「完成」键收起
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        textField.resignFirstResponder()
+        return true
     }
 }
