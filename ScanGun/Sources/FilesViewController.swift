@@ -760,8 +760,9 @@ class FilesViewController: UIViewController, ConnListener {
         }
         let vc = BillHeaderViewController(files: sel, whs: whs, shops: shops)
         vc.modalPresentationStyle = .fullScreen
-        vc.onConfirm = { [weak self] bizDate, billType, whCode, shopCode in
-            self?.generateBill(sel, bizDate: bizDate, billType: billType, whCode: whCode, shopCode: shopCode)
+        vc.onConfirm = { [weak self] bizDate, billType, whCode, shopCode, remark in
+            self?.generateBill(sel, bizDate: bizDate, billType: billType, whCode: whCode,
+                               shopCode: shopCode, remark: remark)
         }
         present(vc, animated: true)
     }
@@ -801,7 +802,7 @@ class FilesViewController: UIViewController, ConnListener {
     /** 生成流程：收集勾选文件全部条码（按条码去重计数；新 8 段行自带完整 SKU 本地聚合）
      *  → 缺失的条码发服务器批量解析 → 汇总累加 → save_bill → 提示单号（文件保持原样） */
     private func generateBill(_ files: [ScanStorage.StoredFile], bizDate: String, billType: String,
-                              whCode: String, shopCode: String) {
+                              whCode: String, shopCode: String, remark: String) {
         var bcCount: [String: Int] = [:]
         var order: [String] = []                       // 保持条码首次出现顺序
         var localSku: [String: BillApi.Sku] = [:]
@@ -850,15 +851,16 @@ class FilesViewController: UIViewController, ConnListener {
                 return ["code": p[0], "color_code": p[1], "size_code": p[2], "qty": agg[key] ?? 0]
             }
             BillApi.saveBill(bizDate: bizDate, shopCode: shopCode, whCode: whCode,
-                             billType: billType, skus: skus) { [weak self] billNo, err in
+                             billType: billType, skus: skus, remark: remark) { [weak self] billNo, err in
                 guard let self = self else { return }
                 self.hideHUD()
                 if let billNo = billNo {
-                    // 成功：单号绿色大字加粗，必须点确定才消失
+                    // 成功：单号绿色大字加粗（有备注时单号后括号显示），必须点确定才消失
+                    let text = remark.isEmpty ? billNo : "\(billNo)（\(remark)）"
                     let a = UIAlertController(title: nil, message: nil, preferredStyle: .alert)
                     a.setValue(NSAttributedString(string: "单据已生成",
                                 attributes: [.font: UIFont.boldSystemFont(ofSize: 17)]), forKey: "attributedTitle")
-                    a.setValue(NSAttributedString(string: billNo,
+                    a.setValue(NSAttributedString(string: text,
                                 attributes: [.font: UIFont.boldSystemFont(ofSize: 22),
                                              .foregroundColor: UIColor(red: 0.13, green: 0.45, blue: 0.18, alpha: 1)]),
                                forKey: "attributedMessage")

@@ -8,8 +8,8 @@ import UIKit
 /// - 点「生成」先弹「请核对数量共 N 件」确认框（数字红色加粗大字号，其余正常色），确定才真正生成
 class BillHeaderViewController: UIViewController {
 
-    /// 确定（确认核对后）回调：(业务日期, 单据类型, 发出仓/店代码, 入货仓/店代码)
-    var onConfirm: ((String, String, String, String) -> Void)?
+    /// 确定（确认核对后）回调：(业务日期, 单据类型, 发出仓/店代码, 入货仓/店代码, 单据备注)
+    var onConfirm: ((String, String, String, String, String) -> Void)?
 
     private let files: [ScanStorage.StoredFile]
     private let whs: [BillApi.Opt]
@@ -35,6 +35,7 @@ class BillHeaderViewController: UIViewController {
     private var whBox = UIButton(type: .system)
     private let shopField = UIStackView()
     private var shopBox = UIButton(type: .system)
+    private var remarkField = UITextField()
     private var dateBox = UIButton(type: .system)
     private let datePicker = UIDatePicker()
     private let scrollView = UIScrollView()
@@ -141,6 +142,30 @@ class BillHeaderViewController: UIViewController {
         shopBox.addTarget(self, action: #selector(shopTapped), for: .touchUpInside)
         shopField.addArrangedSubview(shopBox)
         box.addArrangedSubview(shopField)
+
+        // 单据备注（对齐安卓 v29）：入货仓/店下方，可留空，50 字内；生成后括号显示在单据号后
+        let remarkLabel = UILabel()
+        remarkLabel.text = "单据备注"
+        remarkLabel.font = .systemFont(ofSize: 13)
+        remarkLabel.textColor = UIColor(white: 0.66, alpha: 1)
+        box.addArrangedSubview(remarkLabel)
+        remarkField.placeholder = "可留空；生成后显示在单据号后"
+        remarkField.font = .systemFont(ofSize: 15)
+        remarkField.textColor = .white
+        remarkField.backgroundColor = UIColor(white: 0.17, alpha: 1)
+        remarkField.layer.cornerRadius = 6
+        remarkField.layer.borderWidth = 1
+        remarkField.layer.borderColor = UIColor(white: 0.4, alpha: 1).cgColor
+        remarkField.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        let pad = UIView(frame: CGRect(x: 0, y: 0, width: 12, height: 46))
+        remarkField.leftView = pad
+        remarkField.leftViewMode = .always
+        remarkField.rightView = UIView(frame: CGRect(x: 0, y: 0, width: 12, height: 46))
+        remarkField.rightViewMode = .always
+        remarkField.autocorrectionType = .no
+        remarkField.autocapitalizationType = .none
+        remarkField.delegate = self
+        box.addArrangedSubview(remarkField)
 
         // ---- 整体布局：标题 + 可滚动表单 + 底部按钮 ----
         let root = UIStackView()
@@ -350,10 +375,22 @@ class BillHeaderViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         alert.addAction(UIAlertAction(title: "确定", style: .default) { _ in
             let shopCode = type == "库存盘点单" ? "" : (self.selShop?.code ?? "")
+            let remark = (self.remarkField.text ?? "").trimmingCharacters(in: .whitespaces)
             self.dismiss(animated: true) {
-                self.onConfirm?(self.dateFmt.string(from: self.bizDate), type, wh.code, shopCode)
+                self.onConfirm?(self.dateFmt.string(from: self.bizDate), type, wh.code, shopCode, remark)
             }
         })
         present(alert, animated: true)
+    }
+}
+
+// MARK: - 备注输入限长 50 字（对齐安卓 LengthFilter(50)，中文字符按 1 计）
+extension BillHeaderViewController: UITextFieldDelegate {
+    func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange,
+                   replacementString string: String) -> Bool {
+        let cur = textField.text ?? ""
+        guard let range = Range(range, in: cur) else { return true }
+        let next = cur.replacingCharacters(in: range, with: string)
+        return next.count <= 50
     }
 }

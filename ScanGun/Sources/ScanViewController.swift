@@ -542,8 +542,8 @@ class ScanViewController: UIViewController, ConnListener {
     // MARK: - 手动输入 / 配对 / 历史跳转
     @objc private func manualTapped() {
         let vc = ManualInputViewController()
-        // 条码输入模式（老版本逻辑）：直接按扫码同路径处理
-        vc.onSendBarcode = { [weak self] bc in self?.dispatchScan(bc, "手动输入") }
+        // 条码输入模式：走扫码同路径（含商品验证——验证开启时先验证，通过才发送/存储，对齐安卓 v28）
+        vc.onSendBarcode = { [weak self] bc in self?.onScan(bc, "手动输入") }
         // 商品代码模式：sp_barcode 构造出的真实条码 + 商品信息三项 + 8 段 SKU，数量 N 时回调 N 次
         vc.onSendSku = { [weak self] bc, product, sku in
             self?.dispatchScan(bc, "手动输入", product: product, sku: sku)

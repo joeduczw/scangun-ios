@@ -31,6 +31,10 @@ enum BillApi {
         }
     }
 
+    /// 最近一次网络失败详情（外网问题诊断）：「地址，错误码：描述」；请求成功时清空。
+    /// ATS 拦截（-1022）、超时（-1001/-1004）、DNS 解析失败（-1003）各有特征文案，真机外网问题定位用
+    private(set) static var lastNetErrDetail: String?
+
     private static let session: URLSession = {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 8    // 单请求 8 秒：外网地址失败时回退内网更快（原 15 秒白等）
@@ -82,18 +86,27 @@ enum BillApi {
             body.queryItems = params.map { URLQueryItem(name: $0.key, value: $0.value) }
             req.httpBody = body.percentEncodedQuery?.data(using: .utf8)
             req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-            session.dataTask(with: req) { data, resp, _ in
+            session.dataTask(with: req) { data, resp, error in
                 var obj: [String: Any]? = nil
                 if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode),
                    let d = data, let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] {
                     obj = o
                 }
                 if obj != nil {
+                    lastNetErrDetail = nil
                     DispatchQueue.main.async { cb(obj) }
-                } else if allowFallback && allowOuter && canOuter() {
-                    go(outer: !outer, allowFallback: false)
                 } else {
-                    DispatchQueue.main.async { cb(nil) }
+                    // 记录失败详情（地址+系统错误描述），netErr() 会拼进提示，真机弹窗直接显示根因
+                    var detail = outer ? "外网 www.joedu.vip:\(Prefs.shared.verifyOuterPort)"
+                                       : "内网 192.168.1.179:\(Prefs.shared.verifyInnerPort)"
+                    if let http = resp as? HTTPURLResponse { detail += "，HTTP \(http.statusCode)" }
+                    if let err = error as NSError? { detail += "，错误\(err.code)：\(err.localizedDescription)" }
+                    lastNetErrDetail = detail
+                    if allowFallback && allowOuter && canOuter() {
+                        go(outer: !outer, allowFallback: false)
+                    } else {
+                        DispatchQueue.main.async { cb(nil) }
+                    }
                 }
             }.resume()
         }
@@ -104,9 +117,11 @@ enum BillApi {
 
     /// 网络失败提示：普通部门明确告知需店内网络；其余角色报网络异常
     private static func netErr() -> String {
-        Prefs.shared.deptRole == "normal"
+        var msg = Prefs.shared.deptRole == "normal"
             ? "生成单据需在店内网络使用（当前无法连接店内服务器）"
             : "网络异常，无法连接服务器"
+        if let d = lastNetErrDetail { msg += "\n" + d }
+        return msg
     }
 
     /// 部门账号验证（仅内网）：成功回调 DeptInfo；失败回调错误信息
@@ -161,14 +176,15 @@ enum BillApi {
         }
     }
 
-    /// 生成单据：成功回调单据编号；失败回调错误信息
+    /// 生成单据：成功回调单据编号；失败回调错误信息（remark=单据备注，可留空，服务端限 50 字）
     static func saveBill(bizDate: String, shopCode: String, whCode: String, billType: String,
-                         skus: [[String: Any]], cb: @escaping (String?, String?) -> Void) {
+                         skus: [[String: Any]], remark: String, cb: @escaping (String?, String?) -> Void) {
         let jsonData = (try? JSONSerialization.data(withJSONObject: skus)) ?? Data("[]".utf8)
         post(action: "save_bill", params: [
             "biz_date": bizDate, "shop_code": shopCode, "wh_code": whCode,
             "bill_type": billType, "skus": String(data: jsonData, encoding: .utf8) ?? "[]",
-            "app_user": Prefs.shared.deptUser, "app_pass": Prefs.shared.deptPass
+            "app_user": Prefs.shared.deptUser, "app_pass": Prefs.shared.deptPass,
+            "remark": remark
         ]) { obj in
             guard let obj = obj else { cb(nil, netErr()); return }
             guard obj["success"] as? Bool == true else {
