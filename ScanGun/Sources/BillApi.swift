@@ -33,7 +33,7 @@ enum BillApi {
 
     private static let session: URLSession = {
         let cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 15
+        cfg.timeoutIntervalForRequest = 8    // 单请求 8 秒：外网地址失败时回退内网更快（原 15 秒白等）
         cfg.timeoutIntervalForResource = 120   // 批量解析条码多时耗时较长
         return URLSession(configuration: cfg)
     }()

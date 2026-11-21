@@ -32,9 +32,11 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSCameraUsageDescription: 扫描条码/二维码并将内容发送到电脑
-        # ATS 默认禁止 ws:// 明文连接局域网 IP，必须放行本地网络（否则永远连不上客户机）
+        # ATS 放行所有 http：外网域名 www.joedu.vip 也是明文 http（公网 IP 不属于本地网络，
+        # 仅 NSAllowsLocalNetworking 会被 ATS 拦截导致外网请求全部失败）；内网工具类 APP 与安卓同等自由度
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: true
         # TestFlight 出口合规：本应用不使用加密
         ITSAppUsesNonExemptEncryption: false
         UIApplicationSceneManifest:
