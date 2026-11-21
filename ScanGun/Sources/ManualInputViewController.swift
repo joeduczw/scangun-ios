@@ -317,13 +317,22 @@ class ManualInputViewController: UIViewController, UITextFieldDelegate,
     private func doSearch(_ kw: String, seq: Int) {
         BillApi.spSearch(kw: kw) { [weak self] codes, err in
             guard let self = self, seq == self.searchSeq else { return }
-            if let err = err { CenterToast.show(err); return }
+            if let err = err { self.showErrAlert(err); return }
             guard let codes = codes else { return }
             self.suggestCodes = codes
             self.noMatchLabel.isHidden = codes.isEmpty ? false : true
             self.setTableHeight(self.suggestTable, self.suggestTableH,
                                 rows: codes.count, maxHeight: 280)
         }
+    }
+
+    /// 网络错误弹窗（诊断用）：必须点「确定」才消失——Toast 一闪而过容易错过关键错误信息；
+    /// 已有弹窗时先关旧的再弹新的，避免连续失败叠加
+    private func showErrAlert(_ msg: String) {
+        presentedViewController?.dismiss(animated: false)
+        let a = UIAlertController(title: "请求失败", message: msg, preferredStyle: .alert)
+        a.addAction(UIAlertAction(title: "确定", style: .default))
+        present(a, animated: true)
     }
 
     private var suggestCodes: [String] = []
@@ -364,7 +373,7 @@ class ManualInputViewController: UIViewController, UITextFieldDelegate,
     private func loadGg(_ spdm: String) {
         BillApi.spGg(spdm: spdm) { [weak self] gg, err in
             guard let self = self else { return }
-            guard let gg = gg else { CenterToast.show(err ?? "查询失败"); return }
+            guard let gg = gg else { self.showErrAlert(err ?? "查询失败"); return }
             self.loadedSpdm = spdm
             self.colors = gg.colors
             self.sizes = gg.sizes
@@ -433,7 +442,7 @@ class ManualInputViewController: UIViewController, UITextFieldDelegate,
         BillApi.spBarcode(spdm: spdm, gg1dm: c.code, gg2dm: s.code) { [weak self] sku, err in
             guard let self = self else { return }
             self.sendBtn.isEnabled = true
-            guard let sku = sku else { CenterToast.show(err ?? "查询失败"); return }
+            guard let sku = sku else { self.showErrAlert(err ?? "查询失败"); return }
             // 8 段 SKU（与验证通过路径同格式）：商品代码|颜色代码|尺码代码|商品名|颜色名|尺码名|单位
             let skuStr = [sku.spdm, sku.gg1dm, sku.gg2dm, sku.spmc,
                           sku.gg1mc, sku.gg2mc, sku.unit].joined(separator: "|")

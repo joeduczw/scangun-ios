@@ -76,6 +76,7 @@ enum BillApi {
                              allowOuter: Bool = true, noRoleLimit: Bool = false,
                              cb: @escaping ([String: Any]?) -> Void) {
         func canOuter() -> Bool { noRoleLimit || Prefs.shared.deptRole != "normal" }
+        var attempts: [String] = []   // 逐次尝试的失败详情（外网→内网回退都记录，诊断用）
         func go(outer: Bool, allowFallback: Bool) {
             guard let url = URL(string: url(outer: outer, action: action)) else {
                 DispatchQueue.main.async { cb(nil) }; return
@@ -101,10 +102,11 @@ enum BillApi {
                                        : "内网 192.168.1.179:\(Prefs.shared.verifyInnerPort)"
                     if let http = resp as? HTTPURLResponse { detail += "，HTTP \(http.statusCode)" }
                     if let err = error as NSError? { detail += "，错误\(err.code)：\(err.localizedDescription)" }
-                    lastNetErrDetail = detail
+                    attempts.append(detail)
                     if allowFallback && allowOuter && canOuter() {
                         go(outer: !outer, allowFallback: false)
                     } else {
+                        lastNetErrDetail = attempts.joined(separator: "\n")
                         DispatchQueue.main.async { cb(nil) }
                     }
                 }
