@@ -32,10 +32,10 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSCameraUsageDescription: 扫描条码/二维码并将内容发送到电脑
-        # ATS 放行所有 http：外网域名 www.joedu.vip 也是明文 http（公网 IP 不属于本地网络，
-        # 仅 NSAllowsLocalNetworking 会被 ATS 拦截导致外网请求全部失败）；内网工具类 APP 与安卓同等自由度
+        # ATS 放行所有 http（内网 192.168.1.x 与外网域名 www.joedu.vip 均为明文 http）。
+        # ⚠️ 只能保留 NSAllowsArbitraryLoads 一个键：iOS 10 起字典中若同时存在 NSAllowsLocalNetworking，
+        # NSAllowsArbitraryLoads 会被整个忽略（真机实测外网报 -1022 的根因）
         NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
           NSAllowsArbitraryLoads: true
         # TestFlight 出口合规：本应用不使用加密
         ITSAppUsesNonExemptEncryption: false
@@ -50,7 +50,7 @@ targets:
         # ⚠️ 用户需改成自己在苹果后台注册的 Bundle ID（部署说明有步骤）
         PRODUCT_BUNDLE_IDENTIFIER: com.scangun.app
         MARKETING_VERSION: "1.3.22"
-        CURRENT_PROJECT_VERSION: "29"
+        CURRENT_PROJECT_VERSION: "30"
         TARGETED_DEVICE_FAMILY: "1,2"        # iPhone + iPad（iPad 原生运行，避免兼容模式布局异常）
         # CI 通过 -allowProvisioningUpdates + App Store Connect API Key 自动签名
         CODE_SIGN_STYLE: Automatic
